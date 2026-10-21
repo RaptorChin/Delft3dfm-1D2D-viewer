@@ -1,0 +1,2 @@
+# 批次檔以 Big5 (cp950) + CRLF 儲存，cmd 才能正確讀取中文；git 不做任何轉換
+*.bat -text

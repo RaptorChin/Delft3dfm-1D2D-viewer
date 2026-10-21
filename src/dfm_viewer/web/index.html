@@ -6,11 +6,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title id="pageTitle">Delft3D-FM 1D2D 多分區水理時空成果展示圖台</title>
 
-  <!-- Leaflet & Fonts (雙重備援: 本機與 CDN 自動切換 / Dual Fallback: Local & CDN) -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-  <!-- Chart.js CDN for Timeseries / 時序圖表套件 -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- Leaflet 使用本機檔案 (web/leaflet.*)；Chart.js 鎖定版本 -->
+  <link rel="stylesheet" href="/static/leaflet.css">
+  <!-- defer：網路慢或被擋時不會卡住整個頁面 (圖表只在點擊查詢時才用到) -->
+  <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 
   <style>
     :root {
@@ -351,9 +350,9 @@
     </div>
     <div class="header-right">
       <div class="header-badges">
-        <span class="badge"><span data-i18n="badgePartitions">分區數量</span>: <b id="partCount">11</b></span>
-        <span class="badge"><span data-i18n="badgeTimeseries">時序長度</span>: <b id="timeSteps">13 步 (12h)</b></span>
-        <span class="badge"><span data-i18n="badgeCRS">坐標系</span>: <b>TWD97 / TM2</b></span>
+        <span class="badge"><span data-i18n="badgePartitions">分區數量</span>: <b id="partCount">0</b></span>
+        <span class="badge"><span data-i18n="badgeTimeseries">時序長度</span>: <b id="timeSteps">-</b></span>
+        <span class="badge"><span data-i18n="badgeCRS">坐標系</span>: <b id="crsLabel">-</b></span>
       </div>
       <button id="langToggleBtn" class="lang-btn" type="button" title="切換語言 / Switch Language">🌐 EN / 中文</button>
     </div>
@@ -369,13 +368,12 @@
         </div>
         <label>
           <span data-i18n="lblFolderPath">資料夾路徑</span>
-          <input id="dataPath" type="text" value="D:\2026WRAP\ZARR\0005\Changhua-12hr-300mm-Yuanlin_ZARR">
+          <input id="dataPath" type="text" value="" placeholder="例：D:\模型\output（原始成果會自動轉檔）">
         </label>
         <div style="display: flex; gap: 8px; margin-top: 4px;">
           <button id="browseFolderBtn" type="button" class="secondary" style="flex: 1;" data-i18n="btnBrowseFolder">📂 點選瀏覽資料夾</button>
-          <button id="scanBtn" type="button" style="flex: 1;" data-i18n="btnRescan">🔄 重新掃描</button>
+          <button id="scanBtn" type="button" style="flex: 1;" data-i18n="btnRescan">🔄 載入／重新掃描</button>
         </div>
-        <input id="folderInput" type="file" webkitdirectory directory multiple style="display: none;">
       </div>
 
       <!-- 2. WMTS 底圖切換 / Base Map Selection -->
@@ -397,7 +395,7 @@
       <!-- 3. 向量與分區套疊 / Partition & Vector Overlay -->
       <div class="section-box">
         <div class="section-title">
-          <span><span data-i18n="secPartitions">🧩 分區圖層與邊界套疊</span> (<span id="activeCount">11</span>/11)</span>
+          <span><span data-i18n="secPartitions">🧩 分區圖層與邊界套疊</span> (<span id="activeCount">0</span>/<span id="totalCount">0</span>)</span>
           <button id="toggleAllBtn" class="secondary" style="padding: 2px 6px; font-size: 0.72rem;" data-i18n="btnToggleAll">全選/取消</button>
         </div>
         <div id="partitionList" class="partition-list"></div>
@@ -406,6 +404,51 @@
           <span data-i18n="lblCustomVector">套疊自訂向量 (GeoJSON)</span>
           <input id="vectorFile" type="file" accept=".geojson,.json">
         </label>
+      </div>
+
+      <!-- 3b. 1D 渠道／管線 / 1D network (成果含 1D 時才顯示) -->
+      <div id="mesh1dSection" class="section-box" style="display: none;">
+        <div class="section-title">
+          <span data-i18n="sec1D">〰️ 1D 渠道／管線</span>
+        </div>
+        <label style="flex-direction: row; align-items: center; gap: 8px; cursor: pointer; color: var(--text-main);">
+          <input id="mesh1dToggle" type="checkbox" checked>
+          <span data-i18n="lbl1DShow">顯示 1D 圖層</span>
+        </label>
+        <label style="margin-top: 4px;">
+          <span data-i18n="lbl1DVar">顯示項目</span>
+          <select id="mesh1dVarSelect"></select>
+        </label>
+        <label style="flex-direction: row; align-items: center; gap: 8px; margin-top: 4px; cursor: pointer; color: var(--text-main);">
+          <input id="mesh1dMaxToggle" type="checkbox">
+          <span data-i18n="lbl1DMax">顯示全時段最大值（不隨時間播放）</span>
+        </label>
+        <div style="margin-top: 6px;">
+          <div id="mesh1dRamp" style="height: 10px; border-radius: 3px;"></div>
+          <div style="display: flex; justify-content: space-between; font-size: 0.72rem; color: var(--text-muted); margin-top: 2px;">
+            <span id="mesh1dMin">0</span><span id="mesh1dUnit"></span><span id="mesh1dMax">1</span>
+          </div>
+        </div>
+        <p style="font-size: 0.72rem; color: var(--text-muted); line-height: 1.4; margin-top: 4px;" data-i18n="txt1DHint">
+          點擊線段可查看該段歷線。灰色＝無資料或低於門檻。
+        </p>
+      </div>
+
+      <!-- 3c. 觀測站與結構物 / Stations & structures (成果含 his 時才顯示) -->
+      <div id="hisSection" class="section-box" style="display: none;">
+        <div class="section-title">
+          <span data-i18n="secHis">🏭 觀測站與結構物</span>
+        </div>
+        <div id="hisCatList" style="display: flex; flex-direction: column; gap: 4px;"></div>
+        <label style="margin-top: 6px;">
+          <span data-i18n="lblHisSearch">搜尋名稱</span>
+          <input id="hisSearch" type="text" list="hisNames" placeholder="例：Pump-001">
+          <datalist id="hisNames"></datalist>
+        </label>
+        <div id="hisCheck" style="margin-top: 8px; font-size: 0.76rem; line-height: 1.55; color: var(--text-main);"></div>
+        <p style="font-size: 0.72rem; color: var(--text-muted); line-height: 1.4; margin-top: 4px;" data-i18n="txtHisHint">
+          點擊標記查看歷線。抽水站：綠＝運轉中、灰＝停機、灰框虛線＝整場未運轉。
+        </p>
       </div>
 
       <!-- 4. 淹水色階與透明度調整 / Color & Opacity Settings -->
@@ -480,6 +523,19 @@
       </div>
     </div>
 
+    <!-- 自動轉檔進度 / Auto-conversion progress -->
+    <div id="convertOverlay" style="display: none; position: fixed; inset: 0; z-index: 3000; background: rgba(15,23,42,0.6); align-items: center; justify-content: center;">
+      <div style="background: var(--bg-card); color: var(--text-main); border-radius: 12px; padding: 22px 26px; width: min(460px, calc(100vw - 32px)); box-shadow: 0 10px 30px rgba(0,0,0,0.4);">
+        <div style="font-weight: 700; font-size: 1rem; margin-bottom: 6px;">⚙️ 第一次開啟這份成果，正在轉檔…</div>
+        <div id="convertSource" style="font-size: 0.75rem; color: var(--text-muted); word-break: break-all; margin-bottom: 12px;"></div>
+        <div style="height: 8px; background: rgba(255,255,255,0.12); border-radius: 4px; overflow: hidden;">
+          <div id="convertBar" style="height: 100%; width: 0%; background: var(--accent); transition: width 0.4s;"></div>
+        </div>
+        <div id="convertMsg" style="font-size: 0.82rem; margin-top: 10px;"></div>
+        <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 8px;">轉檔結果會保留，下次開啟同一份成果就不用再等。</div>
+      </div>
+    </div>
+
     <!-- 底部時序播放控制器 / Bottom Timeline Controller -->
     <div class="timeline-bar">
       <button id="playBtn" type="button" style="min-width: 80px;" data-i18n="btnPlay">▶ 播放</button>
@@ -519,7 +575,7 @@
         secDataSource: "📁 ZARR / COG 資料來源",
         lblFolderPath: "資料夾路徑",
         btnBrowseFolder: "📂 點選瀏覽資料夾",
-        btnRescan: "🔄 重新掃描",
+        btnRescan: "🔄 載入／重新掃描",
         secBaseMap: "🗺️ WMTS 底圖選擇",
         lblBaseLayer: "底圖圖層",
         optEmap: "臺灣通用電子地圖 (EMAP)",
@@ -554,7 +610,37 @@
         chartCompositeLabel: "全區最大水深合成",
         chartYAxis: "水深 (m)",
         alertLoadFail: "載入失敗",
-        alertGeojsonFail: "解析 GeoJSON 失敗"
+        alertGeojsonFail: "解析 GeoJSON 失敗",
+        sec1D: "〰️ 1D 渠道／管線",
+        lbl1DShow: "顯示 1D 圖層",
+        lbl1DVar: "顯示項目",
+        lbl1DMax: "顯示全時段最大值（不隨時間播放）",
+        txt1DHint: "點擊線段可查看該段歷線。灰色＝無資料或低於門檻。",
+        var1D: { waterdepth: "水深", s1: "水位", waterdepth_on_ground: "地面溢淹水深", q1: "流量" },
+        popup1DTitle: "〰️ 1D 線段",
+        popup1DBranch: "管段／河段",
+        popup1DPart: "分區",
+        chart1DTitle: "〰️ 1D 線段歷線",
+        secHis: "🏭 觀測站與結構物",
+        lblHisSearch: "搜尋名稱",
+        txtHisHint: "點擊標記查看歷線。抽水站：綠＝運轉中、灰＝停機、灰框虛線＝整場未運轉。",
+        catHis: { station: "觀測站", pump: "抽水站", orifice: "閘門", weirgen: "堰", weir: "堰", general_structure: "通用結構物",
+                  culvert: "涵洞", bridge: "橋梁", uniweir: "特殊堰", dambreak: "潰堤", compound: "複合結構物", cross_section: "觀測斷面" },
+        varHis: { waterlevel: "水位", waterdepth: "水深", rain: "雨量", velocity_magnitude: "流速",
+                  structure_discharge: "抽水量", capacity: "設計容量", discharge: "流量", s1up: "上游水位", s1dn: "下游水位",
+                  s1_suction_side: "吸水側水位", s1_delivery_side: "出水側水位", gate_lower_edge_level: "閘門下緣高程",
+                  gate_opening_height: "閘門開度", crest_level: "堰頂高程", actual_stage: "運轉段數" },
+        chkPumps: (ran, total, full) => `抽水站：<b>${ran}</b>／${total} 座曾運轉，其中 <b>${full}</b> 座曾滿載`,
+        chkPumpsIdle: n => `▸ 整場未運轉的抽水站（${n} 座）`,
+        chkStation: (name, d) => `觀測站最大水深：<b>${d} m</b>（${name}）`,
+        chkWB: (err, pct) => `質量平衡誤差：<b>${err} m³</b>（總水量的 ${pct}%）`,
+        popupHisNow: "目前",
+        popupHisMax: "整場最大",
+        stateRun: "運轉中", stateOff: "停機", stateNever: "整場未運轉",
+        locDesign: (b, ch) => `位置：管段 ${b} 里程 ${ch} m（structures.ini 設計位置）`,
+        locDesignXY: "位置：structures.ini 設計位置",
+        locHis: "位置：模式計算位置（找不到 structures.ini，可能與設計位置差數十公尺）",
+        nearby: "附近 15 m 內還有"
       },
       en: {
         pageTitle: "Delft3D-FM 1D2D Multi-Partition Spatio-Temporal Viewer",
@@ -600,7 +686,37 @@
         chartCompositeLabel: "Composite Max Depth",
         chartYAxis: "Depth (m)",
         alertLoadFail: "Load Failed",
-        alertGeojsonFail: "Failed to parse GeoJSON"
+        alertGeojsonFail: "Failed to parse GeoJSON",
+        sec1D: "〰️ 1D Channels / Pipes",
+        lbl1DShow: "Show 1D layer",
+        lbl1DVar: "Variable",
+        lbl1DMax: "Show maximum over all times (static)",
+        txt1DHint: "Click a segment to view its time series. Grey = no data / below threshold.",
+        var1D: { waterdepth: "Water depth", s1: "Water level", waterdepth_on_ground: "Depth on ground", q1: "Discharge" },
+        popup1DTitle: "〰️ 1D Segment",
+        popup1DBranch: "Branch",
+        popup1DPart: "Partition",
+        chart1DTitle: "〰️ 1D Segment Time Series",
+        secHis: "🏭 Stations & Structures",
+        lblHisSearch: "Search by name",
+        txtHisHint: "Click a marker for its time series. Pumps: green = running, grey = off, dashed = never ran.",
+        catHis: { station: "Observation point", pump: "Pump", orifice: "Gate", weirgen: "Weir", weir: "Weir", general_structure: "General structure",
+                  culvert: "Culvert", bridge: "Bridge", uniweir: "Universal weir", dambreak: "Dam break", compound: "Compound structure", cross_section: "Cross section" },
+        varHis: { waterlevel: "Water level", waterdepth: "Water depth", rain: "Rain", velocity_magnitude: "Velocity",
+                  structure_discharge: "Pump discharge", capacity: "Capacity", discharge: "Discharge", s1up: "Upstream level", s1dn: "Downstream level",
+                  s1_suction_side: "Suction-side level", s1_delivery_side: "Delivery-side level", gate_lower_edge_level: "Gate lower edge",
+                  gate_opening_height: "Gate opening", crest_level: "Crest level", actual_stage: "Active stage" },
+        chkPumps: (ran, total, full) => `Pumps: <b>${ran}</b> / ${total} ran, <b>${full}</b> reached capacity`,
+        chkPumpsIdle: n => `▸ Pumps that never ran (${n})`,
+        chkStation: (name, d) => `Max depth at observation points: <b>${d} m</b> (${name})`,
+        chkWB: (err, pct) => `Volume balance error: <b>${err} m³</b> (${pct}% of total volume)`,
+        popupHisNow: "Now",
+        popupHisMax: "Max",
+        stateRun: "Running", stateOff: "Off", stateNever: "Never ran",
+        locDesign: (b, ch) => `Location: branch ${b}, chainage ${ch} m (design, structures.ini)`,
+        locDesignXY: "Location: design position (structures.ini)",
+        locHis: "Location: computational point from his.nc (structures.ini not found; may differ by tens of metres)",
+        nearby: "Also within 15 m"
       }
     };
 
@@ -626,9 +742,18 @@
         $('playBtn').textContent = dict.btnPause;
       }
 
+      if (catalog && catalog.mesh1d) {
+        fill1DSelect();
+        update1DLegend();
+      }
       if (lastQueryData) {
         showChart(lastQueryData);
+      } else if (last1DChart) {
+        show1DChart(last1DChart.data, last1DChart.props);
+      } else if (lastHisChart) {
+        showHisChart(lastHisChart.data, lastHisChart.props);
       }
+      if (hisInfo) renderHisPanel();
     }
 
     $('langToggleBtn').addEventListener('click', () => {
@@ -687,7 +812,7 @@
             const popupContent = `
               <div style="font-size:0.82rem; color:#0f172a; line-height:1.4;">
                 <b style="color:#0284c7;">${dict.popupTitle}</b><br>
-                <b>TWD97:</b> (${data.query_coord.x_twd97}, ${data.query_coord.y_twd97})<br>
+                <b>${data.query_coord.crs}:</b> (${data.query_coord.x_native}, ${data.query_coord.y_native})<br>
                 <b>${dict.popupMaxDepth}:</b> <span style="color:#dc2626;font-weight:700;">${data.composite_max_depth} m</span><br>
                 <b>${dict.popupCoveredParts}:</b> ${data.hit_partitions.length}
               </div>
@@ -714,20 +839,53 @@
           res = await fetch('/api/catalog');
         }
         if (!res.ok) {
-          const err = await res.json();
+          const err = await res.json().catch(() => ({}));
           const dict = i18n[currentLang];
-          alert(`${dict.alertLoadFail}: ${err.detail || 'Error'}`);
+          alert(`${dict.alertLoadFail}: ${err.detail || res.statusText}`);
+          return;
+        }
+        if (res.status === 202) {  // 原始 .nc 資料夾：伺服器在背景轉檔中
+          waitForConversion(await res.json());
           return;
         }
         catalog = await res.json();
+        if (catalog.current_path) $('dataPath').value = catalog.current_path;
         renderCatalog();
       } catch (err) {
         console.error('Directory scan failed / 掃描資料夾失敗:', err);
       }
     }
 
+    // 自動轉檔進度：每秒詢問一次，完成後載入結果
+    function waitForConversion(status) {
+      const box = $('convertOverlay');
+      const show = s => {
+        $('convertSource').textContent = s.source || '';
+        $('convertMsg').textContent = s.message || '';
+        $('convertBar').style.width = `${s.percent || 0}%`;
+      };
+      box.style.display = 'flex';
+      show(status);
+      const timer = setInterval(async () => {
+        try {
+          const s = await (await fetch('/api/convert/status')).json();
+          show(s);
+          if (s.state === 'done' || s.state === 'error') {
+            clearInterval(timer);
+            box.style.display = 'none';
+            if (s.state === 'done') loadCatalog();
+            else alert(s.message);
+          }
+        } catch (err) {
+          console.error('Conversion status failed:', err);
+        }
+      }, 1000);
+    }
+
     function renderCatalog() {
       $('partCount').textContent = catalog.partition_count;
+      $('totalCount').textContent = catalog.partition_count;
+      $('crsLabel').textContent = catalog.crs || '-';
       const rangeText = catalog.start_time && catalog.end_time ? `${catalog.start_time} ~ ${catalog.end_time}` : `${catalog.times.length} h`;
       $('timeSteps').textContent = `${catalog.times.length} (${rangeText})`;
       $('timeSlider').max = Math.max(0, catalog.times.length - 1);
@@ -775,7 +933,7 @@
         cb.addEventListener('change', (e) => {
           const pid = e.target.dataset.pid;
           if (partitionOverlays[pid]) {
-            partitionOverlays[pid].setOpacity(e.target.checked ? 0.85 : 0);
+            partitionOverlays[pid].setOpacity(e.target.checked ? 1.0 : 0);
           }
           if (partitionBoundsLayers[pid]) {
             if (e.target.checked) partitionBoundsLayers[pid].addTo(map);
@@ -787,6 +945,8 @@
 
       updateActiveCount();
       updateFrame(0);
+      setup1D();
+      setupHis();
     }
 
     function updateActiveCount() {
@@ -802,10 +962,12 @@
     function updateFrame(frameIdx) {
       currentFrame = frameIdx;
       updateTimeLabel(frameIdx);
+      if (!$('mesh1dMaxToggle').checked) update1D(frameIdx);
+      updateHis(frameIdx);
 
       catalog.partitions.forEach(p => {
         const [pw, ps, pe, pn] = p.bounds_wgs84;
-        const url = `/api/partition/${p.id}/depth/${frameIdx}.png?opacity_scale=${opacityScale}&color_scheme=${currentColorScheme}&show_shallow=${showShallow}`;
+        const url = `/api/partition/${p.id}/depth/${frameIdx}.png?opacity_scale=${opacityScale}&color_scheme=${currentColorScheme}&show_shallow=${showShallow}&v=${catalog.version}`;
         const cb = $('partitionList').querySelector(`input[data-pid="${p.id}"]`);
         const visible = cb ? cb.checked : true;
 
@@ -880,26 +1042,26 @@
       if (p) loadCatalog(p);
     });
 
-    // 點選瀏覽資料夾事件 / Folder Picker Handler
-    $('browseFolderBtn').addEventListener('click', async () => {
-      if (window.showDirectoryPicker) {
-        try {
-          const dirHandle = await window.showDirectoryPicker();
-          alert(`已選擇資料夾: ${dirHandle.name}。\n若需載入本機伺服器路徑，請確認「資料夾路徑」欄位為正確的絕對路徑（例如 D:\\2026WRAP\\ZARR\\...）。`);
-        } catch (err) {
-          if (err.name !== 'AbortError') console.error('Folder picker error:', err);
-        }
-      } else {
-        $('folderInput').click();
-      }
+    $('dataPath').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') $('scanBtn').click();
     });
 
-    $('folderInput').addEventListener('change', (e) => {
-      if (e.target.files.length > 0) {
-        const firstFile = e.target.files[0];
-        const relativePath = firstFile.webkitRelativePath || '';
-        const folderName = relativePath.split('/')[0];
-        alert(`已選取資料夾目錄: ${folderName}`);
+    // 點選瀏覽資料夾：由伺服器 (本機) 跳出 Windows 選擇資料夾視窗，取得完整路徑後直接載入
+    // (瀏覽器基於安全限制無法取得資料夾的完整路徑，所以改由伺服器端開視窗)
+    $('browseFolderBtn').addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/browse', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          alert(data.detail || res.statusText);
+          return;
+        }
+        if (data.path) {
+          $('dataPath').value = data.path;
+          loadCatalog(data.path);
+        }
+      } catch (err) {
+        console.error('Folder picker error:', err);
       }
     });
 
@@ -924,28 +1086,82 @@
       reader.readAsText(file);
     });
 
+    // 共用：在右下角面板繪製折線圖 / Shared chart renderer
+    function renderChart(title, tooltipTitle, labels, datasets, yTitle, unit, y2Title) {
+      // 有資料集指定 yAxisID: 'y2' 時，加上右側第二縱軸 (例如流量在左、水位在右)
+      const extraScales = datasets.some(d => d.yAxisID === 'y2') ? {
+        y2: {
+          position: 'right',
+          title: { display: true, text: y2Title || '', color: '#94a3b8' },
+          grid: { drawOnChartArea: false },
+          ticks: { color: '#94a3b8' }
+        }
+      } : {};
+      $('chartTitle').textContent = title;
+      $('chartTitle').title = tooltipTitle || '';
+      $('chartPanel').classList.add('active');
+
+      const container = document.getElementById('chartContainer') || $('chartPanel');
+      if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
+      let canvas = document.getElementById('hydroChartCanvas');
+      if (canvas) canvas.remove();
+      canvas = document.createElement('canvas');
+      canvas.id = 'hydroChartCanvas';
+      container.appendChild(canvas);
+
+      if (typeof Chart === 'undefined') {  // Chart.js 由網路載入，離線或公司網路擋住時無法畫圖
+        container.innerHTML = '<p style="color:#fca5a5;font-size:0.8rem;padding:12px;">' +
+          (currentLang === 'zh' ? '圖表套件無法載入（需要連上網路 cdn.jsdelivr.net）。' : 'Chart library could not be loaded (needs access to cdn.jsdelivr.net).') +
+          '</p><canvas id="hydroChartCanvas"></canvas>';
+        return;
+      }
+      try {
+        chartInstance = new Chart(canvas.getContext('2d'), {
+          type: 'line',
+          data: { labels: labels, datasets: datasets },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 300 },
+            interaction: { mode: 'index', intersect: false },
+            scales: {
+              y: {
+                beginAtZero: unit !== 'level',
+                title: { display: true, text: yTitle, color: '#94a3b8' },
+                grid: { color: 'rgba(255,255,255,0.08)' },
+                ticks: { color: '#94a3b8' }
+              },
+              x: {
+                grid: { color: 'rgba(255,255,255,0.08)' },
+                ticks: { color: '#94a3b8', maxRotation: 45, minRotation: 0 }
+              },
+              ...extraScales
+            },
+            plugins: {
+              legend: { position: 'top', labels: { color: '#f8fafc', boxWidth: 12, font: { size: 11 } } },
+              tooltip: {
+                callbacks: {
+                  label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y === null ? '-' : ctx.parsed.y.toFixed(3)}`
+                }
+              }
+            }
+          }
+        });
+      } catch (err) {
+        console.error('Render Chart Failed / 繪製 Chart 失敗:', err);
+      }
+    }
+
     // Chart Modal Logic (自動多圖層合成最大水深 Envelope / Hydrograph Timeseries Chart)
     function showChart(data) {
       if (!data) return;
       lastQueryData = data;
+      lastHisChart = null;
+      last1DChart = null;
       const dict = i18n[currentLang];
-      const partNames = data.hit_partitions.join(', ');
       const titleInfo = data.hit_count > 1
         ? `📍 ${dict.chartCompositeLabel} (${currentLang === 'zh' ? '涵蓋' : 'Covers'} ${data.hit_count} ${dict.badgePartitions})`
         : `📍 ${dict.chartTitleDefault} - ${data.hit_partitions[0] || ''}`;
-
-      $('chartTitle').textContent = titleInfo;
-      $('chartTitle').title = partNames;
-      $('chartPanel').classList.add('active');
-
-      const container = document.getElementById('chartContainer') || $('chartPanel');
-      let canvas = document.getElementById('hydroChartCanvas');
-      if (canvas) {
-        canvas.remove();
-      }
-      canvas = document.createElement('canvas');
-      canvas.id = 'hydroChartCanvas';
-      container.appendChild(canvas);
 
       // 建立資料集: 第一條為合成最大歷線 (粗線高亮)，其餘為個別分區歷線 (虛線/輔助)
       const datasets = [{
@@ -975,53 +1191,456 @@
           });
         });
       }
+      renderChart(titleInfo, data.hit_partitions.join(', '), data.time_labels, datasets, dict.chartYAxis, 'depth');
+    }
 
+    // ───────────── 1D 渠道／管線 / 1D network ─────────────
+    const UNITS_1D = { waterdepth: 'm', s1: 'm', waterdepth_on_ground: 'm', q1: 'm³/s' };
+    const RAMP_1D = ['#ffffb2', '#fecc5c', '#fd8d3c', '#f03b20', '#bd0026'];  // 暖色系，與 2D 藍色區隔
+    const NODATA_1D = '#94a3b8';
+    let mesh1dLayer = null;
+    let mesh1dRenderer = null;
+    let mesh1dValues = [];
+    let mesh1dReq = 0;
+    let last1DChart = null;
+
+    const hexRgb = h => [1, 3, 5].map(k => parseInt(h.substr(k, 2), 16));
+    function rampColor(t) {
+      t = Math.max(0, Math.min(1, t)) * (RAMP_1D.length - 1);
+      const i = Math.min(Math.floor(t), RAMP_1D.length - 2), f = t - i;
+      const a = hexRgb(RAMP_1D[i]), b = hexRgb(RAMP_1D[i + 1]);
+      return `rgb(${a.map((v, k) => Math.round(v + (b[k] - v) * f)).join(',')})`;
+    }
+
+    function selected1DVar() { return $('mesh1dVarSelect').value || 'waterdepth'; }
+
+    function style1D(v, variable) {
+      const x = variable === 'q1' && v !== null ? Math.abs(v) : v;
+      // 水深／溢淹／流量低於 0.01 視為乾或無流量 (灰色細線)；水位不設門檻
+      if (x === null || x === undefined || (variable !== 's1' && x < 0.01)) {
+        return { color: NODATA_1D, weight: 1.5, opacity: 0.6 };
+      }
+      return { color: rampColor(scale1D(x, variable)), weight: 3.5, opacity: 0.95 };
+    }
+
+    // 數值 → 0~1。流量跨好幾個數量級 (下水道 <1 m³/s、河道數百 m³/s)，改用對數色階，兩者才都看得出差異
+    const Q_MIN = 0.01;
+    function scale1D(x, variable) {
+      const [lo, hi] = catalog.mesh1d.vars[variable];
+      if (variable === 'q1') {
+        const top = Math.max(hi, Q_MIN * 10);
+        return Math.log10(Math.max(x, Q_MIN) / Q_MIN) / Math.log10(top / Q_MIN);
+      }
+      return (x - lo) / ((hi - lo) || 1);
+    }
+
+    function fill1DSelect() {
+      const sel = $('mesh1dVarSelect');
+      const keep = sel.value;
+      const names = i18n[currentLang].var1D;
+      // 依固定順序列出 (水深 → 水位 → 地面溢淹 → 流量)，資料內有但未列入的變數放最後
+      const order = Object.keys(UNITS_1D).filter(k => k in catalog.mesh1d.vars)
+        .concat(Object.keys(catalog.mesh1d.vars).filter(k => !(k in UNITS_1D)));
+      sel.innerHTML = order
+        .map(k => `<option value="${k}">${names[k] || k} (${UNITS_1D[k] || ''})</option>`).join('');
+      sel.value = catalog.mesh1d.vars[keep] ? keep : ('waterdepth' in catalog.mesh1d.vars ? 'waterdepth' : sel.options[0].value);
+    }
+
+    function update1DLegend() {
+      const v = selected1DVar();
+      const [lo, hi] = catalog.mesh1d.vars[v];
+      $('mesh1dRamp').style.background = `linear-gradient(to right, ${RAMP_1D.join(',')})`;
+      const isLog = v === 'q1';
+      $('mesh1dMin').textContent = isLog ? `${Q_MIN}` : lo.toFixed(2);
+      $('mesh1dMax').textContent = `≥ ${hi.toFixed(isLog ? 0 : 2)}`;
+      $('mesh1dUnit').textContent = `${i18n[currentLang].var1D[v] || v} (${UNITS_1D[v] || ''})${isLog ? (currentLang === 'zh' ? '・對數' : ' · log') : ''}`;
+    }
+
+    async function setup1D() {
+      if (mesh1dLayer) { map.removeLayer(mesh1dLayer); mesh1dLayer = null; }
+      mesh1dValues = [];
+      if (!catalog.mesh1d) {
+        $('mesh1dSection').style.display = 'none';
+        return;
+      }
+      $('mesh1dSection').style.display = '';
+      fill1DSelect();
+      update1DLegend();
+      if (!mesh1dRenderer) {
+        map.createPane('mesh1d').style.zIndex = 450;  // 疊在 2D 淹水圖 (overlayPane 400) 之上
+        mesh1dRenderer = L.canvas({ pane: 'mesh1d', padding: 0.5, tolerance: 4 });
+      }
       try {
-        const ctx = canvas.getContext('2d');
-        chartInstance = new Chart(ctx, {
-          type: 'line',
-          data: {
-            labels: data.time_labels,
-            datasets: datasets
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: { duration: 300 },
-            interaction: {
-              mode: 'index',
-              intersect: false,
-            },
-            scales: {
-              y: {
-                beginAtZero: true,
-                title: { display: true, text: dict.chartYAxis, color: '#94a3b8' },
-                grid: { color: 'rgba(255,255,255,0.08)' },
-                ticks: { color: '#94a3b8' }
-              },
-              x: {
-                grid: { color: 'rgba(255,255,255,0.08)' },
-                ticks: { color: '#94a3b8', maxRotation: 45, minRotation: 0 }
-              }
-            },
-            plugins: {
-              legend: {
-                position: 'top',
-                labels: { color: '#f8fafc', boxWidth: 12, font: { size: 11 } }
-              },
-              tooltip: {
-                callbacks: {
-                  label: function (context) {
-                    return ` ${context.dataset.label}: ${context.parsed.y.toFixed(3)} m`;
-                  }
-                }
-              }
-            }
+        const geo = await (await fetch(`/api/mesh1d/geometry?v=${catalog.version}`)).json();
+        mesh1dLayer = L.geoJSON(geo, {
+          pane: 'mesh1d',
+          renderer: mesh1dRenderer,
+          style: { color: NODATA_1D, weight: 1.5, opacity: 0.6 },
+          onEachFeature: (feature, layer) => {
+            layer.on('click', e => {
+              L.DomEvent.stop(e);  // 不要同時觸發 2D 點位查詢
+              show1DSegment(feature.properties, e.latlng);
+            });
+          }
+        });
+        if ($('mesh1dToggle').checked) mesh1dLayer.addTo(map);
+        update1D(currentFrame);
+      } catch (err) {
+        console.error('1D geometry load failed / 載入 1D 線形失敗:', err);
+      }
+    }
+
+    async function update1D(frameIdx) {
+      if (!mesh1dLayer || !catalog || !catalog.mesh1d) return;
+      const variable = selected1DVar();
+      const t = $('mesh1dMaxToggle').checked ? -1 : frameIdx;
+      const req = ++mesh1dReq;
+      try {
+        const data = await (await fetch(`/api/mesh1d/frame/${t}?var=${variable}&v=${catalog.version}`)).json();
+        if (req !== mesh1dReq) return;  // 播放中已有更新的請求，丟棄舊結果
+        mesh1dValues = data.values;
+        mesh1dLayer.eachLayer(l => l.setStyle(style1D(mesh1dValues[l.feature.properties.id], variable)));
+      } catch (err) {
+        console.error('1D frame load failed / 載入 1D 數值失敗:', err);
+      }
+    }
+
+    async function show1DSegment(props, latlng) {
+      const dict = i18n[currentLang];
+      const v = selected1DVar();
+      const cur = mesh1dValues[props.id];
+      L.popup().setLatLng(latlng).setContent(`
+        <div style="font-size:0.82rem; color:#0f172a; line-height:1.4;">
+          <b style="color:#c2410c;">${dict.popup1DTitle}</b><br>
+          <b>${dict.popup1DBranch}:</b> ${props.branch || '-'}<br>
+          <b>${dict.popup1DPart}:</b> ${props.partition}<br>
+          <b>${dict.var1D[v] || v}:</b> <span style="color:#dc2626;font-weight:700;">${cur === null || cur === undefined ? '-' : cur} ${UNITS_1D[v] || ''}</span>
+        </div>`).openOn(map);
+      try {
+        const data = await (await fetch(`/api/mesh1d/series/${props.id}`)).json();
+        show1DChart(data, props);
+      } catch (err) {
+        console.error('1D series load failed / 載入 1D 歷線失敗:', err);
+      }
+    }
+
+    function show1DChart(data, props) {
+      last1DChart = { data, props };
+      lastHisChart = null;
+      lastQueryData = null;
+      const dict = i18n[currentLang];
+      const v = selected1DVar();
+      const series = data.series[v] || [];
+      const finite = series.filter(x => x !== null);
+      const peak = finite.length ? Math.max(...finite.map(x => v === 'q1' ? Math.abs(x) : x)) : null;
+      renderChart(
+        `${dict.chart1DTitle} - ${props.branch || ''}`,
+        `${dict.popup1DPart} ${props.partition}`,
+        data.time_labels,
+        [{
+          label: `${dict.var1D[v] || v} (${UNITS_1D[v] || ''})${peak === null ? '' : ` Max: ${peak.toFixed(3)}`}`,
+          data: series,
+          borderColor: '#f97316',
+          backgroundColor: 'rgba(249, 115, 22, 0.22)',
+          fill: v !== 's1',
+          tension: 0.3,
+          borderWidth: 2.5,
+          pointRadius: 3
+        }],
+        `${dict.var1D[v] || v} (${UNITS_1D[v] || ''})`,
+        v === 's1' ? 'level' : 'value'
+      );
+    }
+
+    $('mesh1dToggle').addEventListener('change', e => {
+      if (!mesh1dLayer) return;
+      if (e.target.checked) mesh1dLayer.addTo(map); else map.removeLayer(mesh1dLayer);
+    });
+    $('mesh1dVarSelect').addEventListener('change', () => {
+      update1DLegend();
+      update1D(currentFrame);
+      if (last1DChart) show1DChart(last1DChart.data, last1DChart.props);
+    });
+    $('mesh1dMaxToggle').addEventListener('change', () => update1D(currentFrame));
+
+    // ───────────── 觀測站與結構物 / Stations & structures (his.nc) ─────────────
+    // 每類一個顏色與字母；未列出的類別 (例如其他模型的涵洞) 用預設值
+    const HIS_STYLE = {
+      station: { color: '#0ea5e9', letter: 'S' }, pump: { color: '#16a34a', letter: 'P' },
+      orifice: { color: '#a855f7', letter: 'G' }, weirgen: { color: '#b45309', letter: 'W' },
+      weir: { color: '#b45309', letter: 'W' }, bridge: { color: '#0d9488', letter: 'B' },
+      culvert: { color: '#db2777', letter: 'C' }, general_structure: { color: '#f59e0b', letter: 'X' },
+      cross_section: { color: '#e11d48', letter: '|' }
+    };
+    const HIS_DEFAULT_STYLE = { color: '#64748b', letter: '?' };
+    const PUMP_OFF = '#6b7280';
+    // 歷線圖：左軸 (流量類)、右軸 (水位類)；變數名稱不含類別前綴的部分
+    const HIS_CHART = {
+      station: { left: ['waterlevel'], right: ['waterdepth'], leftUnit: 'm', rightUnit: 'm' },
+      pump: { left: ['structure_discharge', 'capacity'], right: ['s1_suction_side', 's1_delivery_side', 's1up', 's1dn'] },
+      orifice: { left: ['discharge'], right: ['s1up', 's1dn', 'gate_lower_edge_level'] },
+      weirgen: { left: ['discharge'], right: ['s1up', 's1dn', 'crest_level'] },
+      cross_section: { left: ['discharge'], right: [] }
+    };
+    const HIS_LINE_COLORS = ['#38bdf8', '#f97316', '#22c55e', '#e879f9', '#facc15', '#f43f5e'];
+
+    let hisInfo = null;          // /api/his/objects 回傳
+    let hisLayers = {};          // 類別 → L.layerGroup
+    let hisMarkers = {};         // `${cat}:${idx}` → marker / polyline
+    let hisValues = {};          // 目前時間步的主要數值
+    let hisPane = null;
+    let hisReq = 0;
+    let lastHisChart = null;
+
+    const hisStyle = cat => HIS_STYLE[cat] || HIS_DEFAULT_STYLE;
+    // NetCDF 單位寫法轉成一般寫法 (m3 s-1 → m³/s)
+    const prettyUnit = u => (u || '').replace(/m3 s-1/g, 'm³/s').replace(/m s-1/g, 'm/s')
+      .replace(/mm day-1/g, 'mm/day').replace(/mm h-1|mm hr-1/g, 'mm/hr').replace(/m2/g, 'm²');
+    const hisCatName = cat => (i18n[currentLang].catHis || {})[cat] || cat;
+    const hisVarName = (cat, v) => {
+      const key = cat === 'station' ? v : v.replace(`${cat}_`, '');
+      return (i18n[currentLang].varHis || {})[key] || key;
+    };
+
+    function hisIcon(cat, props, value, offset = 0) {
+      const st = hisStyle(cat);
+      let bg = st.color, border = '2px solid #fff';
+      if (cat === 'pump') {
+        const running = value !== null && value !== undefined && Math.abs(value) > 1e-6;
+        bg = running ? st.color : PUMP_OFF;
+        if (props.ran === false) border = '2px dashed #cbd5e1';
+      }
+      return L.divIcon({
+        className: '',
+        iconSize: [20, 20],
+        iconAnchor: [10 - offset * 22, 10],  // 同位置的多個物件左右錯開，避免互相蓋住
+        html: `<div style="width:20px;height:20px;border-radius:50%;background:${bg};border:${border};` +
+              `box-shadow:0 1px 4px rgba(0,0,0,.5);color:#fff;font:700 11px/16px sans-serif;text-align:center;">${st.letter}</div>`
+      });
+    }
+
+    async function setupHis() {
+      Object.values(hisLayers).forEach(l => map.removeLayer(l));
+      hisLayers = {}; hisMarkers = {}; hisValues = {}; hisInfo = null;
+      if (!catalog.his) {
+        $('hisSection').style.display = 'none';
+        return;
+      }
+      if (!hisPane) {
+        hisPane = map.createPane('his');
+        hisPane.style.zIndex = 620;  // 疊在 1D 線段 (450) 與一般標記之上
+      }
+      try {
+        hisInfo = await (await fetch(`/api/his/objects?v=${catalog.version}`)).json();
+      } catch (err) {
+        console.error('his objects load failed / 載入觀測站／結構物失敗:', err);
+        return;
+      }
+      $('hisSection').style.display = '';
+      const sameSpot = {};  // 位置 → 已放幾個標記
+      hisInfo.geojson.features.forEach(f => {
+        const p = f.properties, cat = p.cat;
+        if (!hisLayers[cat]) hisLayers[cat] = L.layerGroup();
+        let layer;
+        if (f.geometry.type === 'Point') {
+          const [lng, lat] = f.geometry.coordinates;
+          const spot = `${lat.toFixed(5)},${lng.toFixed(5)}`;  // 約 1 m 內才視為同位置並錯開 (錯開會偏離真實位置)
+          const offset = sameSpot[spot] = (sameSpot[spot] ?? -1) + 1;
+          layer = L.marker([lat, lng], { icon: hisIcon(cat, p, null, offset), pane: 'his', title: p.name });
+          layer.hisOffset = offset;
+        } else {
+          layer = L.polyline(f.geometry.coordinates.map(([lng, lat]) => [lat, lng]),
+            { color: hisStyle(cat).color, weight: 5, pane: 'his' });
+        }
+        layer.on('click', e => { L.DomEvent.stop(e); showHisObject(p, e.latlng || layer.getLatLng()); });
+        layer.hisProps = p;
+        hisMarkers[`${cat}:${p.idx}`] = layer;
+        hisLayers[cat].addLayer(layer);
+      });
+      Object.values(hisLayers).forEach(l => l.addTo(map));
+      renderHisPanel();
+      updateHis(currentFrame);
+    }
+
+    function renderHisPanel() {
+      const dict = i18n[currentLang];
+      const cats = hisInfo.categories;
+      const list = $('hisCatList');
+      list.innerHTML = Object.entries(cats).map(([cat, c]) => {
+        const st = hisStyle(cat);
+        return `<label style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;color:var(--text-main);">
+          <input type="checkbox" data-hiscat="${cat}" ${hisLayers[cat] ? '' : 'disabled'}>
+          <span style="display:inline-block;width:16px;height:16px;border-radius:50%;background:${st.color};color:#fff;font:700 10px/16px sans-serif;text-align:center;">${st.letter}</span>
+          <span>${hisCatName(cat)} (${c.located}${c.located < c.count ? `/${c.count}` : ''})</span></label>`;
+      }).join('');
+      list.querySelectorAll('input[data-hiscat]').forEach(cb => {
+        cb.checked = !!hisLayers[cb.dataset.hiscat] && map.hasLayer(hisLayers[cb.dataset.hiscat]);
+        cb.addEventListener('change', e => {
+          const l = hisLayers[e.target.dataset.hiscat];
+          if (!l) return;
+          if (e.target.checked) l.addTo(map); else map.removeLayer(l);
+        });
+      });
+
+      $('hisNames').innerHTML = hisInfo.geojson.features
+        .map(f => `<option value="${f.properties.name}">${hisCatName(f.properties.cat)}</option>`).join('');
+
+      // 檢核摘要
+      const feats = hisInfo.geojson.features.map(f => f.properties);
+      const pumps = feats.filter(p => p.cat === 'pump');
+      const lines = [];
+      if (pumps.length) {
+        const ran = pumps.filter(p => p.ran).length;
+        const full = pumps.filter(p => (p.full_frac || 0) > 0).length;
+        lines.push(dict.chkPumps(ran, pumps.length, full));
+        const idle = pumps.filter(p => p.ran === false);
+        if (idle.length) {
+          lines.push(`<details><summary style="cursor:pointer;color:var(--accent);">${dict.chkPumpsIdle(idle.length)}</summary>
+            <div style="max-height:120px;overflow:auto;padding-left:8px;">${idle.map(p =>
+              `<a href="#" data-hisgo="pump:${p.idx}" style="display:block;color:var(--text-muted);">${p.name}</a>`).join('')}</div></details>`);
+        }
+      }
+      const stations = feats.filter(p => p.cat === 'station' && p.waterdepth_max !== undefined && p.waterdepth_max !== null);
+      if (stations.length) {
+        const top = stations.reduce((a, b) => (b.waterdepth_max > a.waterdepth_max ? b : a));
+        lines.push(`<a href="#" data-hisgo="station:${top.idx}" style="color:inherit;">${dict.chkStation(top.name, top.waterdepth_max)}</a>`);
+      }
+      const wb = hisInfo.water_balance || {};
+      if (wb.water_balance_volume_error !== undefined && wb.water_balance_total_volume) {
+        const pct = Math.abs(wb.water_balance_volume_error / wb.water_balance_total_volume * 100);
+        lines.push(dict.chkWB(wb.water_balance_volume_error.toFixed(1), pct < 0.001 ? pct.toExponential(1) : pct.toFixed(3)));
+      }
+      $('hisCheck').innerHTML = lines.map(l => `<div>${l}</div>`).join('');
+      $('hisCheck').querySelectorAll('[data-hisgo]').forEach(a => a.addEventListener('click', e => {
+        e.preventDefault();
+        goToHis(a.dataset.hisgo);
+      }));
+    }
+
+    function goToHis(key) {
+      const layer = hisMarkers[key];
+      if (!layer) return;
+      const cat = key.split(':')[0];
+      if (hisLayers[cat] && !map.hasLayer(hisLayers[cat])) {
+        hisLayers[cat].addTo(map);
+        const cb = $('hisCatList').querySelector(`input[data-hiscat="${cat}"]`);
+        if (cb) cb.checked = true;
+      }
+      const ll = layer.getLatLng ? layer.getLatLng() : layer.getBounds().getCenter();
+      // 不播放平移動畫：動畫中開啟彈出視窗會自動再平移，物件會被擠到畫面角落
+      map.setView(ll, Math.max(map.getZoom(), 17), { animate: false });
+      showHisObject(layer.hisProps, ll);
+    }
+
+    $('hisSearch').addEventListener('change', e => {
+      const name = e.target.value.trim();
+      const f = hisInfo && hisInfo.geojson.features.find(x => x.properties.name === name);
+      if (f) goToHis(`${f.properties.cat}:${f.properties.idx}`);
+    });
+
+    async function updateHis(frameIdx) {
+      if (!hisInfo) return;
+      const req = ++hisReq;
+      try {
+        const data = await (await fetch(`/api/his/frame/${frameIdx}?v=${catalog.version}`)).json();
+        if (req !== hisReq) return;
+        hisValues = data.values || {};
+        (hisValues.pump || []).forEach((v, i) => {   // 只有抽水站依運轉狀態換色
+          const m = hisMarkers[`pump:${i}`];
+          if (!m || !m.setIcon) return;
+          const running = v !== null && Math.abs(v) > 1e-6;
+          if (m.hisRunning !== running) {
+            m.hisRunning = running;
+            m.setIcon(hisIcon('pump', m.hisProps, v, m.hisOffset));
           }
         });
       } catch (err) {
-        console.error('Render Chart Failed / 繪製 Chart 失敗:', err);
+        console.error('his frame load failed / 載入觀測站／結構物數值失敗:', err);
       }
+    }
+
+    function fmt(v, d = 3) { return v === null || v === undefined ? '-' : Number(v).toFixed(d); }
+
+    async function showHisObject(props, latlng) {
+      const dict = i18n[currentLang];
+      const cat = props.cat;
+      const now = (hisValues[cat] || [])[props.idx];
+      let extra = '';
+      if (cat === 'pump') {
+        const state = props.ran === false ? dict.stateNever : (now !== null && now !== undefined && Math.abs(now) > 1e-6 ? dict.stateRun : dict.stateOff);
+        extra = `<b>${dict.popupHisNow}:</b> ${state}，${fmt(now)} m³/s<br>
+                 <b>${dict.popupHisMax}:</b> ${fmt(props.q_max)} / ${fmt(props.cap_max)} m³/s`;
+      } else if (cat === 'station') {
+        extra = `<b>${dict.popupHisNow} ${hisVarName(cat, 'waterdepth')}:</b> ${fmt(now)} m<br>
+                 <b>${dict.popupHisMax} ${hisVarName(cat, 'waterdepth')}:</b> ${fmt(props.waterdepth_max)} m`;
+      } else {
+        extra = `<b>${dict.popupHisNow} ${hisVarName(cat, 'discharge')}:</b> ${fmt(now)} m³/s<br>
+                 <b>${dict.popupHisMax} |Q|:</b> ${fmt(props.q_absmax)} m³/s`;
+      }
+      let locNote = '';
+      if (cat !== 'station' && props.loc_src) {
+        locNote = props.loc_src === 'design'
+          ? (props.branch ? dict.locDesign(props.branch, Number(props.chainage).toFixed(1)) : dict.locDesignXY)
+          : `<span style="color:#b45309;">${dict.locHis}</span>`;
+        locNote = `<div style="font-size:0.72rem;color:#475569;margin-top:3px;">${locNote}</div>`;
+      }
+      // 附近的其他物件 (重疊時可從這裡切換，不必移動標記位置)
+      const self = hisMarkers[`${cat}:${props.idx}`];
+      const here = self && self.getLatLng ? self.getLatLng() : latlng;
+      const near = Object.entries(hisMarkers)
+        .filter(([k, m]) => m !== self && m.getLatLng && map.distance(here, m.getLatLng()) <= 15)
+        .map(([k, m]) => `<a href="#" data-hisgo="${k}" style="color:#0369a1;">${hisStyle(m.hisProps.cat).letter} ${m.hisProps.name}</a>`);
+      const nearHtml = near.length
+        ? `<div style="font-size:0.72rem;margin-top:3px;">${dict.nearby}：${near.join('、')}</div>` : '';
+      const popup = L.popup().setLatLng(here).setContent(`
+        <div style="font-size:0.82rem; color:#0f172a; line-height:1.45;">
+          <b style="color:${hisStyle(cat).color};">${hisStyle(cat).letter} ${hisCatName(cat)}</b><br>
+          <b>${props.name}</b><br>${extra}${locNote}${nearHtml}
+        </div>`).openOn(map);
+      popup.getElement().querySelectorAll('[data-hisgo]').forEach(a => a.addEventListener('click', e => {
+        e.preventDefault();
+        const m = hisMarkers[a.dataset.hisgo];
+        if (m) showHisObject(m.hisProps, m.getLatLng());
+      }));
+      try {
+        const data = await (await fetch(`/api/his/series/${cat}/${props.idx}`)).json();
+        showHisChart(data, props);
+      } catch (err) {
+        console.error('his series load failed / 載入歷線失敗:', err);
+      }
+    }
+
+    function showHisChart(data, props) {
+      lastHisChart = { data, props };
+      lastQueryData = null;
+      last1DChart = null;
+      const cat = props.cat;
+      const prefix = cat === 'station' ? '' : `${cat}_`;
+      const cfg = HIS_CHART[cat] || { left: ['discharge'], right: ['s1up', 's1dn'] };
+      const pick = names => names.map(n => prefix + n).filter(n => data.series[n]);
+      let right = pick(cfg.right);
+      // 抽水站：有吸水側／出水側水位就不重複畫上下游水位
+      if (cat === 'pump' && right.some(n => n.includes('suction'))) right = right.filter(n => !/s1(up|dn)$/.test(n));
+      const left = pick(cfg.left);
+      const datasets = [];
+      let k = 0;
+      left.forEach(n => datasets.push({
+        label: `${hisVarName(cat, n)} (${prettyUnit(data.series[n].units)})`, data: data.series[n].data,
+        borderColor: HIS_LINE_COLORS[k++ % HIS_LINE_COLORS.length], borderWidth: 2.5, pointRadius: 2, tension: 0.2,
+        borderDash: n.endsWith('capacity') ? [6, 4] : undefined, yAxisID: 'y'
+      }));
+      right.forEach(n => datasets.push({
+        label: `${hisVarName(cat, n)} (${prettyUnit(data.series[n].units)})`, data: data.series[n].data,
+        borderColor: HIS_LINE_COLORS[k++ % HIS_LINE_COLORS.length], borderWidth: 1.5, pointRadius: 1.5, tension: 0.2,
+        borderDash: [3, 3], yAxisID: 'y2'
+      }));
+      const unitOf = n => prettyUnit(n && data.series[n] ? data.series[n].units : '');
+      renderChart(
+        `${hisStyle(cat).letter} ${hisCatName(cat)} - ${props.name}`, props.name, data.time_labels, datasets,
+        left.length ? `${hisVarName(cat, left[0])} (${unitOf(left[0])})` : '',
+        cat === 'station' ? 'level' : 'value',
+        right.length ? `${hisVarName(cat, right[0])} (${unitOf(right[0])})` : ''
+      );
     }
 
     $('closeChart').addEventListener('click', () => {

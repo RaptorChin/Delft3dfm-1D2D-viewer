@@ -1,6 +1,6 @@
-[project]
+[workspace]
 name = "delft3d-fm-viewer"
-version = "1.0.0"
+version = "1.1.0"
 description = "Delft3D-FM 1D2D Multi-Partition Spatio-Temporal Water Level Viewer & NC-to-Zarr/COG Converter"
 authors = ["Flood Modeling Team"]
 channels = ["conda-forge"]
@@ -15,20 +15,15 @@ xarray = ">=2024.1.0"
 zarr = ">=2.16.0"
 pyproj = ">=3.6.1"
 pillow = ">=10.2.0"
-numpy = ">=1.26.0,<2.0"
+numpy = ">=1.26.0"
 pandas = ">=2.2.0"
 netcdf4 = ">=1.6.5"
 h5netcdf = ">=1.3.0"
 jinja2 = ">=3.1.3"
 python-multipart = ">=0.0.9"
+tk = "*"            # 「點選瀏覽資料夾」視窗
 
 [tasks]
-viewer = "python -m dfm_viewer.main"
-convert = "python -m dfm_viewer.convert"
-
-[build-system]
-build-backend = "hatchling.build"
-requires = ["hatchling"]
-
-[tool.pixi.project]
-name = "delft3d-fm-viewer"
+# 直接執行腳本 (不需另外安裝套件本身)；額外參數會接在後面，例如 pixi run viewer --data "D:\成果\XXX_ZARR"
+viewer = "python src/dfm_viewer/main.py"
+convert = "python src/dfm_viewer/convert.py"
