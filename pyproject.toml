@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "delft3d-fm-viewer"
-version = "1.1.0"
+version = "1.2.0"
 description = "Delft3D-FM 1D2D Multi-Partition Spatio-Temporal Water Level Viewer & NC-to-Zarr/COG Converter"
 readme = "README.md"
 license = { text = "MIT" }

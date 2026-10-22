@@ -6,6 +6,7 @@ import io
 import json
 import os
 import threading
+import time
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -22,9 +23,12 @@ from pyproj import Transformer
 from rasterio.transform import Affine, from_bounds
 from rasterio.warp import Resampling, reproject, transform_bounds
 
+from . import code_id
 from . import convert as dfm_convert
 
-app = FastAPI(title="Delft3D-FM Multi-Partition Spatio-Temporal Viewer", version="1.1.0")
+CODE_ID = code_id()  # 伺服器啟動時的程式版本 (main.py 用來避免沿用舊版的背景圖台)
+
+app = FastAPI(title="Delft3D-FM Multi-Partition Spatio-Temporal Viewer", version="1.2.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -193,6 +197,7 @@ def scan_directory(target_path: str) -> DataCatalog:
 @app.get("/api/catalog")
 def get_catalog():
     return {
+        "code_id": CODE_ID,
         "current_path": catalog.current_path,
         "version": catalog.version,
         "crs": catalog.crs,
@@ -235,8 +240,7 @@ def _output_candidates(src: Path, partitions: dict) -> list:
 
 
 def _find_up_to_date(src: Path, partitions: dict, signature: dict):
-    # 舊版放在旁邊的「<資料夾>_ZARR」，仍可沿用
-    for cand in _output_candidates(src, partitions) + [src.parent / f"{src.name}_ZARR"]:
+    for cand in _output_candidates(src, partitions):
         meta = cand / "partitions_metadata.json"
         try:
             with open(meta, encoding="utf-8-sig") as f:
@@ -339,6 +343,25 @@ def convert_status():
     return vars(job)
 
 
+# 頁面開著時定期送心跳；沒有命令視窗執行時 (main.py)，分頁都關了就自動結束
+_last_heartbeat = time.time()
+
+
+def touch_heartbeat():
+    global _last_heartbeat
+    _last_heartbeat = time.time()
+
+
+def last_heartbeat() -> float:
+    return _last_heartbeat
+
+
+@app.post("/api/heartbeat")
+def heartbeat():
+    touch_heartbeat()
+    return {"ok": True}
+
+
 @app.post("/api/browse")
 def browse_folder(request: Request):
     """在執行圖台的這台電腦上跳出「選擇資料夾」視窗 (只允許本機連線使用)。"""
@@ -369,12 +392,26 @@ DEPTH_CLASSES = [
 HAZARD_RGB = {3: (254, 178, 76), 4: (240, 59, 32), 5: (189, 0, 38)}
 
 
-def colorize(depth: np.ndarray, opacity_scale: float, scheme: str, show_shallow: bool) -> np.ndarray:
+def parse_alphas(text: str):
+    """前端「自訂各級不透明度」：逗號分隔的百分比 (每級一個)；空字串或格式不符時用預設值。"""
+    try:
+        pct = [float(v) for v in text.split(",")]
+    except ValueError:
+        return None
+    if len(pct) != len(DEPTH_CLASSES):
+        return None
+    return [np.clip(p, 0, 100) * 2.55 for p in pct]
+
+
+def colorize(depth: np.ndarray, opacity_scale: float, scheme: str, show_shallow: bool,
+             alphas=None) -> np.ndarray:
     rgba = np.zeros(depth.shape + (4,), dtype="u1")
     for k, (lo, hi, rgb, alpha) in enumerate(DEPTH_CLASSES):
         if k == 0 and not show_shallow:
             continue
         m = (depth >= lo) & (depth < hi)
+        if alphas:
+            alpha = alphas[k]
         if scheme == "hazard" and k in HAZARD_RGB:
             rgb = HAZARD_RGB[k]
         rgba[m, :3] = rgb
@@ -382,18 +419,91 @@ def colorize(depth: np.ndarray, opacity_scale: float, scheme: str, show_shallow:
     return rgba
 
 
+# 行政區界 (新北市、基隆市鄉鎮市區，WGS84)：鎖定行政區時，區外的淹水不畫
+TOWNS_GEOJSON = WEB_DIR / "towns.geojson"
+
+
+@lru_cache(maxsize=1)
+def _towns() -> dict:
+    with open(TOWNS_GEOJSON, encoding="utf-8") as f:
+        return {ft["properties"]["code"]: ft for ft in json.load(f)["features"]}
+
+
+@lru_cache(maxsize=256)
+def _town_outside_mask(pid: str, code: str, version: int) -> np.ndarray:
+    """分區 PNG 網格 (EPSG:3857) 上，位於行政區外的像素為 True。version 讓重新掃描後不沿用舊遮罩。"""
+    from rasterio.features import geometry_mask
+
+    town = _towns().get(code)
+    if town is None:
+        raise HTTPException(404, f"找不到行政區代碼 {code}")
+    to3857 = _transformer("EPSG:4326", "EPSG:3857")
+
+    def project(ring):
+        xs, ys = to3857.transform(*np.asarray(ring, dtype="f8").T)
+        return list(zip(xs, ys))
+
+    geom = {"type": "MultiPolygon",
+            "coordinates": [[project(r) for r in poly] for poly in town["geometry"]["coordinates"]]}
+    pinfo = catalog.partitions[pid]
+    ny, nx = pinfo.shape
+    return geometry_mask([geom], out_shape=(ny, nx), transform=from_bounds(*pinfo.bounds_3857, nx, ny))
+
+
+def _max_cog_path(pinfo: PartitionInfo):
+    """轉檔時由 fou.nc 產製的該分區最大水深 COG (依 partitions_metadata.json 對應)；沒有則回傳 None。"""
+    zarr = Path(pinfo.path)
+    try:
+        with open(zarr.parent / "partitions_metadata.json", encoding="utf-8-sig") as f:
+            parts = json.load(f).get("partitions", {})
+    except (OSError, ValueError):
+        return None
+    for entry in parts.values():
+        if entry.get("zarr") and Path(entry["zarr"]).name == zarr.name and entry.get("cog"):
+            cog = zarr.parent / Path(entry["cog"]).name  # 資料夾搬過也找得到
+            return cog if cog.exists() else None
+    return None
+
+
+@lru_cache(maxsize=64)
+def _partition_max_depth(pid: str, version: int) -> np.ndarray:
+    """
+    分區全時段最大水深 (north-up)。優先用 fou.nc 產製的 COG (模式逐計算步統計，較逐時輸出準確)；
+    沒有 fou.nc 或網格對不上時，改取 Zarr 各時間步的最大值。
+    """
+    import rasterio
+
+    pinfo = catalog.partitions[pid]
+    cog = _max_cog_path(pinfo)
+    if cog is not None:
+        with rasterio.open(cog) as src:
+            if [src.height, src.width] == list(pinfo.shape) \
+                    and np.allclose(list(src.transform)[:6], pinfo.transform, atol=1e-3):
+                arr = src.read(1, masked=True).astype("f4")
+                return arr.filled(np.nan)
+        print(f"警告: {cog.name} 與 Zarr 網格不同，改由逐時水深計算最大值")
+    ds = _open(pinfo.path)
+    arr = ds[pinfo.var_name].max("time").values.astype("f4")
+    return arr[::-1] if ds.y.values[0] < ds.y.values[-1] else arr
+
+
 @app.get("/api/partition/{pid}/depth/{frame_idx}.png")
-def get_partition_depth_png(pid: str, frame_idx: int, opacity_scale: float = 1.0,
-                            color_scheme: str = "standard", show_shallow: bool = False):
+def get_partition_depth_png(pid: str, frame_idx: str, opacity_scale: float = 1.0,
+                            color_scheme: str = "standard", show_shallow: bool = False, clip: str = "",
+                            alphas: str = ""):
+    """frame_idx：時間步序號，或 "max" (全時段最大水深)。"""
     pinfo = catalog.partitions.get(pid)
     if pinfo is None:
         raise HTTPException(404, "找不到指定分區")
     try:
-        ds = _open(pinfo.path)
-        frame_idx = max(0, min(frame_idx, ds.sizes["time"] - 1))
-        arr = ds[pinfo.var_name].isel(time=frame_idx).values.astype("f4")
-        if ds.y.values[0] < ds.y.values[-1]:
-            arr = arr[::-1]
+        if frame_idx == "max":
+            arr = _partition_max_depth(pid, catalog.version)
+        else:
+            ds = _open(pinfo.path)
+            idx = max(0, min(int(frame_idx), ds.sizes["time"] - 1))
+            arr = ds[pinfo.var_name].isel(time=idx).values.astype("f4")
+            if ds.y.values[0] < ds.y.values[-1]:
+                arr = arr[::-1]
 
         ny, nx = pinfo.shape
         output = np.full((ny, nx), np.nan, dtype="f4")
@@ -403,8 +513,11 @@ def get_partition_depth_png(pid: str, frame_idx: int, opacity_scale: float = 1.0
             dst_transform=from_bounds(*pinfo.bounds_3857, nx, ny), dst_crs="EPSG:3857",
             dst_nodata=np.nan, resampling=Resampling.nearest,
         )
+        if clip:
+            output[_town_outside_mask(pid, clip, catalog.version)] = np.nan
         buf = io.BytesIO()
-        Image.fromarray(colorize(output, opacity_scale, color_scheme, show_shallow)).save(buf, format="PNG")
+        Image.fromarray(colorize(output, opacity_scale, color_scheme, show_shallow,
+                                 parse_alphas(alphas) if alphas else None)).save(buf, format="PNG")
         return Response(buf.getvalue(), media_type="image/png",
                         headers={"Cache-Control": "public, max-age=3600"})
     except Exception as e:

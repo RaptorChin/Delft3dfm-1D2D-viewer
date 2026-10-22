@@ -129,6 +129,11 @@
       overflow-y: auto;
     }
 
+    /* 淹水圖層放大時不平滑，網格邊界保持方塊 */
+    #map.crisp .leaflet-image-layer {
+      image-rendering: pixelated;
+    }
+
     .section-box {
       background: var(--bg-card);
       border: 1px solid var(--border);
@@ -146,6 +151,24 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    /* 點標題收合：只留標題列 */
+    .section-title > span:first-child::before {
+      content: '▾';
+      display: inline-block;
+      width: 1em;
+      transition: transform 0.15s;
+    }
+
+    .section-box.collapsed .section-title > span:first-child::before {
+      transform: rotate(-90deg);
+    }
+
+    .section-box.collapsed > :not(.section-title) {
+      display: none !important;
     }
 
     label {
@@ -199,6 +222,12 @@
       background: rgba(255, 255, 255, 0.1);
     }
 
+    /* 「最大值」按鈕按下時 */
+    button.secondary.active {
+      background: var(--accent);
+      color: #04101e;
+    }
+
     /* Partition Layer List */
     .partition-list {
       max-height: 140px;
@@ -232,7 +261,7 @@
     #map {
       flex: 1;
       height: 100%;
-      background: #090d16;
+      background: #ffffff;  /* 底圖調淡時淡成白色 (出圖也是白底) */
     }
 
     /* Floating Hydro Timeseries Modal */
@@ -384,11 +413,28 @@
         <label>
           <span data-i18n="lblBaseLayer">底圖圖層</span>
           <select id="baseMapSelect">
-            <option value="emap" data-i18n="optEmap">臺灣通用電子地圖 (EMAP)</option>
-            <option value="photo" data-i18n="optPhoto">臺灣正射影像圖 (PHOTO)</option>
-            <option value="dark" data-i18n="optDark">CartoDB 暗黑風格 (Dark)</option>
-            <option value="osm" data-i18n="optOsm">OpenStreetMap (OSM)</option>
+            <optgroup label="國土測繪中心 NLSC">
+              <option value="emapNew" data-i18n="optEmapNew">通用電子地圖－新版（EMAP98）</option>
+              <option value="emap" data-i18n="optEmap">臺灣通用電子地圖 (EMAP)</option>
+              <option value="emapNoContour" data-i18n="optEmapNoContour">通用電子地圖－無等高線</option>
+              <option value="emapGray" data-i18n="optEmapGray">通用電子地圖－灰階（淹水色最清楚）</option>
+              <option value="emapDetail" data-i18n="optEmapDetail">通用電子地圖－等高線＋門牌</option>
+              <option value="emapEn" data-i18n="optEmapEn">通用電子地圖－英文版</option>
+              <option value="photo" data-i18n="optPhoto">臺灣正射影像圖 (PHOTO)</option>
+              <option value="photoMix" data-i18n="optPhotoMix">正射影像＋道路地名</option>
+              <option value="photo2024" data-i18n="optPhoto2024">113 年正射影像</option>
+              <option value="hillshade" data-i18n="optHillshade">地形陰影圖</option>
+            </optgroup>
+            <optgroup label="其他 Others">
+              <option value="light" data-i18n="optLight">CartoDB 淺色風格 (Light)</option>
+              <option value="dark" data-i18n="optDark">CartoDB 暗黑風格 (Dark)</option>
+              <option value="osm" data-i18n="optOsm">OpenStreetMap (OSM)</option>
+            </optgroup>
           </select>
+        </label>
+        <label style="margin-top: 4px;">
+          <span><span data-i18n="lblBaseOpacity">底圖不透明度</span>: <b id="baseOpacityVal" style="color: var(--accent);">100%</b></span>
+          <input id="baseOpacitySlider" type="range" min="0" max="100" step="5" value="100">
         </label>
       </div>
 
@@ -464,13 +510,41 @@
           </select>
         </label>
         <label style="margin-top: 4px;">
-          <span data-i18n="lblOpacity">整體透明度倍率</span>: <b id="opacityVal" style="color: var(--accent);">100%</b>
+          <span><span data-i18n="lblOpacity">整體透明度倍率</span>: <b id="opacityVal" style="color: var(--accent);">100%</b></span>
           <input id="opacitySlider" type="range" min="10" max="150" value="100">
         </label>
         <label style="flex-direction: row; align-items: center; gap: 8px; margin-top: 6px; cursor: pointer; color: var(--text-main);">
           <input id="shallowToggle" type="checkbox">
           <span data-i18n="lblShallowWater">顯示 0.1m ~ 0.3m 淺積水 (手冊規範預設隱藏)</span>
         </label>
+        <label style="flex-direction: row; align-items: center; gap: 8px; margin-top: 6px; cursor: pointer; color: var(--text-main);">
+          <input id="crispToggle" type="checkbox" checked>
+          <span data-i18n="lblCrisp">放大時保留網格方塊（不暈開）</span>
+        </label>
+        <label style="flex-direction: row; align-items: center; gap: 8px; margin-top: 6px; cursor: pointer; color: var(--text-main);">
+          <input id="customAlphaToggle" type="checkbox">
+          <span data-i18n="lblCustomAlpha">自訂各級不透明度 (%)</span>
+        </label>
+        <div id="customAlphaBox" style="display: none; grid-template-columns: 1fr 64px; gap: 4px 8px; align-items: center; font-size: 0.75rem; margin-top: 4px;"></div>
+      </div>
+
+      <!-- 4b. 行政區鎖定與出圖 / District lock & map export -->
+      <div class="section-box">
+        <div class="section-title">
+          <span data-i18n="secDistrict">🏙️ 行政區出圖</span>
+        </div>
+        <label>
+          <span data-i18n="lblDistrict">鎖定行政區（區外淹水不顯示）</span>
+          <select id="districtSelect">
+            <option value="" data-i18n="optDistrictNone">不鎖定（顯示全部範圍）</option>
+          </select>
+        </label>
+        <label style="margin-top: 4px;">
+          <span data-i18n="lblExportTitle">圖名（空白＝自動）</span>
+          <input id="exportTitle" type="text">
+        </label>
+        <button id="exportPngBtn" type="button" style="margin-top: 6px;" data-i18n="btnExportPng">🖨️ 匯出目前畫面 PNG</button>
+        <p id="exportMsg" style="font-size: 0.72rem; color: var(--text-muted); margin-top: 4px;"></p>
       </div>
 
       <!-- 5. 點位查詢說明 / Point Query Info -->
@@ -485,31 +559,12 @@
     </aside>
 
     <!-- 地圖核心容器 / Map Container -->
-    <div id="map"></div>
+    <div id="map" class="crisp"></div>
 
     <!-- 水深圖例 / Flood Depth Legend -->
     <div class="legend-box" style="min-width: 170px;">
       <span style="font-weight: 700; margin-bottom: 2px;" data-i18n="legendTitle">淹水深度色階 (m)</span>
-      <div style="display: flex; flex-direction: column; gap: 3px; font-size: 0.75rem;">
-        <div id="legendShallow" style="display: none; align-items: center; gap: 6px;"><i
-            style="width: 14px; height: 10px; background: rgba(198,219,239,0.7); border: 1px solid rgba(255,255,255,0.2); border-radius: 2px;"></i>
-          0.1 ~ 0.3 m (<span data-i18n="legLightBlue70">淺藍 70%</span>)</div>
-        <div style="display: flex; align-items: center; gap: 6px;"><i
-            style="width: 14px; height: 10px; background: rgba(198,219,239,0.4); border: 1px solid rgba(255,255,255,0.2); border-radius: 2px;"></i>
-          0.3 ~ 0.5 m (<span data-i18n="legLightBlue40">淺藍 40%</span>)</div>
-        <div style="display: flex; align-items: center; gap: 6px;"><i
-            style="width: 14px; height: 10px; background: rgba(120,180,214,0.4); border: 1px solid rgba(255,255,255,0.2); border-radius: 2px;"></i>
-          0.5 ~ 1.0 m (<span data-i18n="legMidLightBlue">中淺藍 40%</span>)</div>
-        <div style="display: flex; align-items: center; gap: 6px;"><i
-            style="width: 14px; height: 10px; background: rgba(66,146,198,0.4); border: 1px solid rgba(255,255,255,0.2); border-radius: 2px;"></i>
-          1.0 ~ 2.0 m (<span data-i18n="legMidBlue">中藍 40%</span>)</div>
-        <div style="display: flex; align-items: center; gap: 6px;"><i
-            style="width: 14px; height: 10px; background: rgba(37,81,156,0.4); border: 1px solid rgba(255,255,255,0.2); border-radius: 2px;"></i>
-          2.0 ~ 3.0 m (<span data-i18n="legMidDarkBlue">中深藍 40%</span>)</div>
-        <div style="display: flex; align-items: center; gap: 6px;"><i
-            style="width: 14px; height: 10px; background: rgba(8,48,107,0.4); border: 1px solid rgba(255,255,255,0.2); border-radius: 2px;"></i>
-          > 3.0 m (<span data-i18n="legDarkBlue">深藍 40%</span>)</div>
-      </div>
+      <div id="legendRows" style="display: flex; flex-direction: column; gap: 3px; font-size: 0.75rem;"></div>
     </div>
 
     <!-- 點位時序圖表懸浮面板 / Hydrograph Timeseries Modal -->
@@ -540,6 +595,7 @@
     <div class="timeline-bar">
       <button id="playBtn" type="button" style="min-width: 80px;" data-i18n="btnPlay">▶ 播放</button>
       <input id="timeSlider" type="range" min="0" max="12" value="0">
+      <button id="maxBtn" type="button" class="secondary" style="min-width: 80px;" data-i18n="btnMax">⬆ 最大值</button>
       <div id="currentTimeLabel" class="time-badge">T+0h</div>
     </div>
   </div>
@@ -555,6 +611,7 @@
     let catalog = null;
     let map = null;
     let currentBaseLayer = null;
+    let baseOpacity = 1.0;  // 底圖不透明度 (0~1)
     let partitionOverlays = {};
     let partitionBoundsLayers = {};
     let customVectorLayer = null;
@@ -582,6 +639,16 @@
         optPhoto: "臺灣正射影像圖 (PHOTO)",
         optDark: "CartoDB 暗黑風格 (Dark)",
         optOsm: "OpenStreetMap (OSM)",
+        lblBaseOpacity: "底圖不透明度",
+        optEmapNew: "通用電子地圖－新版（EMAP98）",
+        optEmapNoContour: "通用電子地圖－無等高線",
+        optEmapGray: "通用電子地圖－灰階（淹水色最清楚）",
+        optEmapDetail: "通用電子地圖－等高線＋門牌",
+        optEmapEn: "通用電子地圖－英文版",
+        optPhotoMix: "正射影像＋道路地名",
+        optPhoto2024: "113 年正射影像",
+        optHillshade: "地形陰影圖",
+        optLight: "CartoDB 淺色風格 (Light)",
         secPartitions: "🧩 分區圖層與邊界套疊",
         btnToggleAll: "全選/取消",
         lblCustomVector: "套疊自訂向量 (GeoJSON)",
@@ -594,15 +661,15 @@
         secQueryInfo: "📊 時空點位查詢",
         txtQueryDesc: "👉 點擊地圖上任意位置，系統將自動定位所屬分區與網格，即時提取水深歷線曲線圖。",
         legendTitle: "淹水深度色階 (m)",
-        legLightBlue70: "淺藍 70%",
-        legLightBlue40: "淺藍 40%",
-        legMidLightBlue: "中淺藍 40%",
-        legMidBlue: "中藍 40%",
-        legMidDarkBlue: "中深藍 40%",
-        legDarkBlue: "深藍 40%",
+        lblCrisp: "放大時保留網格方塊（不暈開）",
+        lblCustomAlpha: "自訂各級不透明度 (%)",
         chartTitleDefault: "📍 點位水深時序歷線",
         btnPlay: "▶ 播放",
         btnPause: "⏸ 暫停",
+        btnMax: "⬆ 最大值",
+        lblMaxAllTime: "全時段最大值",
+        exportTitleMax: area => `${area}最大淹水深度圖`,
+        exportFileMax: "最大淹水深度",
         popupTitle: "📍 淹水網格點位查詢",
         popupMaxDepth: "最大水深",
         popupCoveredParts: "涵蓋分區",
@@ -640,7 +707,21 @@
         locDesign: (b, ch) => `位置：管段 ${b} 里程 ${ch} m（structures.ini 設計位置）`,
         locDesignXY: "位置：structures.ini 設計位置",
         locHis: "位置：模式計算位置（找不到 structures.ini，可能與設計位置差數十公尺）",
-        nearby: "附近 15 m 內還有"
+        nearby: "附近 15 m 內還有",
+        secDistrict: "🏙️ 行政區出圖",
+        lblDistrict: "鎖定行政區（區外淹水不顯示）",
+        optDistrictNone: "不鎖定（顯示全部範圍）",
+        lblExportTitle: "圖名（空白＝自動）",
+        btnExportPng: "🖨️ 匯出目前畫面 PNG",
+        exportBusy: "出圖中，正在下載高解析度底圖…",
+        exportDone: name => `已下載：${name}`,
+        exportFail: "出圖失敗",
+        exportNoData: "請先載入成果資料夾",
+        exportTitleAuto: (area, t) => `${area}淹水深度圖（${t}）`,
+        exportAreaAll: "模擬範圍",
+        exportLegend: "淹水深度 (m)",
+        exportNorth: "N",
+        exportSource: base => `底圖：${base}｜行政區界：內政部國土測繪中心`
       },
       en: {
         pageTitle: "Delft3D-FM 1D2D Multi-Partition Spatio-Temporal Viewer",
@@ -658,6 +739,16 @@
         optPhoto: "Taiwan Orthophoto (PHOTO)",
         optDark: "CartoDB Dark Theme",
         optOsm: "OpenStreetMap (OSM)",
+        lblBaseOpacity: "Base map opacity",
+        optEmapNew: "Taiwan e-Map - new (EMAP98)",
+        optEmapNoContour: "Taiwan e-Map - no contours",
+        optEmapGray: "Taiwan e-Map - greyscale (best flood contrast)",
+        optEmapDetail: "Taiwan e-Map - contours + addresses",
+        optEmapEn: "Taiwan e-Map - English",
+        optPhotoMix: "Orthophoto + roads & names",
+        optPhoto2024: "Orthophoto 2024",
+        optHillshade: "Terrain hillshade",
+        optLight: "CartoDB Light Theme",
         secPartitions: "🧩 Partition Layers & Bounds",
         btnToggleAll: "Select/Deselect All",
         lblCustomVector: "Overlay Custom Vector (GeoJSON)",
@@ -670,15 +761,15 @@
         secQueryInfo: "📊 Spatio-Temporal Point Query",
         txtQueryDesc: "👉 Click anywhere on the map to locate partitions and query 2.5m precision hydrograph curves.",
         legendTitle: "Inundation Depth (m)",
-        legLightBlue70: "Light Blue 70%",
-        legLightBlue40: "Light Blue 40%",
-        legMidLightBlue: "Mid-Light Blue 40%",
-        legMidBlue: "Mid Blue 40%",
-        legMidDarkBlue: "Mid-Dark Blue 40%",
-        legDarkBlue: "Deep Blue 40%",
+        lblCrisp: "Keep grid cells sharp when zoomed in",
+        lblCustomAlpha: "Custom opacity per class (%)",
         chartTitleDefault: "📍 Point Hydrograph Timeseries",
         btnPlay: "▶ Play",
         btnPause: "⏸ Pause",
+        btnMax: "⬆ Max",
+        lblMaxAllTime: "Maximum (all times)",
+        exportTitleMax: area => `${area} Maximum Inundation Depth`,
+        exportFileMax: "max_depth",
         popupTitle: "📍 Point Depth Query",
         popupMaxDepth: "Max Depth",
         popupCoveredParts: "Covered Partitions",
@@ -716,7 +807,21 @@
         locDesign: (b, ch) => `Location: branch ${b}, chainage ${ch} m (design, structures.ini)`,
         locDesignXY: "Location: design position (structures.ini)",
         locHis: "Location: computational point from his.nc (structures.ini not found; may differ by tens of metres)",
-        nearby: "Also within 15 m"
+        nearby: "Also within 15 m",
+        secDistrict: "🏙️ District Map Export",
+        lblDistrict: "Lock to district (hide flooding outside)",
+        optDistrictNone: "No lock (whole extent)",
+        lblExportTitle: "Map title (blank = auto)",
+        btnExportPng: "🖨️ Export current view as PNG",
+        exportBusy: "Exporting, downloading high-resolution base map…",
+        exportDone: name => `Downloaded: ${name}`,
+        exportFail: "Export failed",
+        exportNoData: "Please load a result folder first",
+        exportTitleAuto: (area, t) => `${area} Inundation Depth (${t})`,
+        exportAreaAll: "Model extent",
+        exportLegend: "Inundation depth (m)",
+        exportNorth: "N",
+        exportSource: base => `Base map: ${base} | Districts: NLSC, MOI`
       }
     };
 
@@ -742,6 +847,7 @@
         $('playBtn').textContent = dict.btnPause;
       }
 
+      if (catalog) updateTimeLabel(currentFrame);
       if (catalog && catalog.mesh1d) {
         fill1DSelect();
         update1DLegend();
@@ -761,30 +867,52 @@
     });
 
     // WMTS Base Maps (底圖來源配置)
+    // 國土測繪中心 WMTS 圖層 (圖層代碼見 https://wmts.nlsc.gov.tw/wmts?SERVICE=WMTS&REQUEST=GetCapabilities)
+    const nlsc = (layer, name, opts = {}) => L.tileLayer(
+      `https://wmts.nlsc.gov.tw/wmts/${layer}/default/GoogleMapsCompatible/{z}/{y}/{x}`,
+      { attribution: `© 內政部國土測繪中心 · ${name}`, maxZoom: 19, crossOrigin: true, ...opts });
     const baseMaps = {
-      emap: L.tileLayer('https://wmts.nlsc.gov.tw/wmts/EMAP/default/GoogleMapsCompatible/{z}/{y}/{x}', {
-        attribution: '© 內政部國土測繪中心 · 臺灣通用電子地圖', maxZoom: 19
-      }),
-      photo: L.tileLayer('https://wmts.nlsc.gov.tw/wmts/PHOTO2/default/GoogleMapsCompatible/{z}/{y}/{x}', {
-        attribution: '© 內政部國土測繪中心 · 正射影像圖', maxZoom: 19
+      emapNew: nlsc('EMAP98', '臺灣通用電子地圖(新)'),
+      emap: nlsc('EMAP', '臺灣通用電子地圖'),
+      emapNoContour: nlsc('EMAP6', '臺灣通用電子地圖(無等高線)'),
+      emapGray: nlsc('EMAP01', '臺灣通用電子地圖(灰階)'),
+      emapDetail: nlsc('EMAP5', '臺灣通用電子地圖(等高線+門牌)'),
+      emapEn: nlsc('EMAP8', 'Taiwan e-Map (EN)'),
+      photo: nlsc('PHOTO2', '正射影像圖'),
+      photoMix: nlsc('PHOTO_MIX', '正射影像(混合)'),
+      photo2024: nlsc('PHOTO2024', '113年正射影像圖'),
+      hillshade: nlsc('MOI_HILLSHADE', '陰影圖', { maxNativeZoom: 17 }),  // 17 級以上沒有細節，直接放大
+      light: L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+        attribution: '© CartoDB Light', maxZoom: 19, crossOrigin: true
       }),
       dark: L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        attribution: '© CartoDB Dark', maxZoom: 19
+        attribution: '© CartoDB Dark', maxZoom: 19, crossOrigin: true
       }),
       osm: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap', maxZoom: 19
+        attribution: '© OpenStreetMap', maxZoom: 19, crossOrigin: true
       })
     };
 
     function initMap() {
       map = L.map('map', { zoomControl: false }).setView([23.95, 120.55], 11);
       L.control.zoom({ position: 'topright' }).addTo(map);
-      currentBaseLayer = baseMaps.emap.addTo(map);
+      currentBaseLayer = baseMaps[$('baseMapSelect').value].addTo(map);
+      // 行政區遮罩與邊界：在淹水圖層 (overlayPane 400) 之上、標記 (markerPane 600) 之下
+      map.createPane('districtPane');
+      map.getPane('districtPane').style.zIndex = 450;
+      map.getPane('districtPane').style.pointerEvents = 'none';
 
-      // Base map switch
+      // Base map switch (沿用目前的底圖不透明度)
       $('baseMapSelect').addEventListener('change', (e) => {
         if (currentBaseLayer) map.removeLayer(currentBaseLayer);
-        currentBaseLayer = baseMaps[e.target.value].addTo(map);
+        currentBaseLayer = baseMaps[e.target.value].setOpacity(baseOpacity).addTo(map);
+      });
+
+      // 底圖不透明度 (調淡底圖讓淹水更明顯)
+      $('baseOpacitySlider').addEventListener('input', (e) => {
+        baseOpacity = Number(e.target.value) / 100;
+        $('baseOpacityVal').textContent = `${e.target.value}%`;
+        currentBaseLayer.setOpacity(baseOpacity);
       });
 
       // 點擊查詢標記與 Popup (Query Marker & Popup)
@@ -957,17 +1085,21 @@
     let opacityScale = 1.0;
     let currentColorScheme = 'standard';
     let showShallow = false;
+    let customAlphas = null;  // 自訂各級不透明度 (%)；null = 使用預設色階
+    let showMax = false;      // true = 淹水深度顯示全時段最大值
 
     // Update single time frame / 更新指定時序圖層幀
     function updateFrame(frameIdx) {
       currentFrame = frameIdx;
       updateTimeLabel(frameIdx);
+      const frameKey = showMax ? 'max' : frameIdx;  // 淹水圖層：時間步或全時段最大值
       if (!$('mesh1dMaxToggle').checked) update1D(frameIdx);
       updateHis(frameIdx);
 
       catalog.partitions.forEach(p => {
         const [pw, ps, pe, pn] = p.bounds_wgs84;
-        const url = `/api/partition/${p.id}/depth/${frameIdx}.png?opacity_scale=${opacityScale}&color_scheme=${currentColorScheme}&show_shallow=${showShallow}&v=${catalog.version}`;
+        const alphas = customAlphas ? customAlphas.join(',') : '';
+        const url = `/api/partition/${p.id}/depth/${frameKey}.png?opacity_scale=${opacityScale}&color_scheme=${currentColorScheme}&show_shallow=${showShallow}&alphas=${alphas}&clip=${districtCode}&v=${catalog.version}`;
         const cb = $('partitionList').querySelector(`input[data-pid="${p.id}"]`);
         const visible = cb ? cb.checked : true;
 
@@ -988,29 +1120,48 @@
       const val = Number(e.target.value);
       $('opacityVal').textContent = `${val}%`;
       opacityScale = val / 100.0;
+      renderLegend();
       updateFrame(currentFrame);
     });
 
     // 配色方案切換事件 / Color Scheme Change Event
     $('colorSchemeSelect').addEventListener('change', (e) => {
       currentColorScheme = e.target.value;
+      renderLegend();
       updateFrame(currentFrame);
     });
 
     // 0.1m~0.3m 淺水層切換事件 / Shallow Water Toggle Event
     $('shallowToggle').addEventListener('change', (e) => {
       showShallow = e.target.checked;
-      const legend01 = document.getElementById('legendShallow');
-      if (legend01) {
-        legend01.style.display = showShallow ? 'flex' : 'none';
-      }
+      renderLegend();
       updateFrame(currentFrame);
+    });
+
+    // 放大時不平滑 (像素直接放大成方塊) / Crisp grid cells
+    $('crispToggle').addEventListener('change', (e) => {
+      $('map').classList.toggle('crisp', e.target.checked);
     });
 
     function updateTimeLabel(idx) {
       const lbl = catalog && catalog.time_labels && catalog.time_labels[idx] ? catalog.time_labels[idx] : `T+${idx}h`;
-      $('currentTimeLabel').textContent = lbl;
+      $('currentTimeLabel').textContent = showMax ? i18n[currentLang].lblMaxAllTime : lbl;
     }
+
+    // 「最大值」按鈕：淹水深度改顯示全時段最大值 (1D 圖層同步切換)；再按一次、拖曳時間軸或播放就回到逐時
+    function setMaxMode(on) {
+      showMax = on;
+      $('maxBtn').classList.toggle('active', on);
+      if (catalog && catalog.mesh1d && $('mesh1dMaxToggle').checked !== on) {
+        $('mesh1dMaxToggle').checked = on;
+        update1D(currentFrame);
+      }
+      if (catalog) updateFrame(currentFrame);
+    }
+    $('maxBtn').addEventListener('click', () => {
+      if (isPlaying) togglePlay();
+      setMaxMode(!showMax);
+    });
 
     // Playback control / 時序動態播放控制
     function togglePlay() {
@@ -1021,6 +1172,7 @@
         $('playBtn').textContent = dict.btnPlay;
       } else {
         if (!catalog || catalog.times.length === 0) return;
+        if (showMax) setMaxMode(false);
         isPlaying = true;
         $('playBtn').textContent = dict.btnPause;
         playInterval = setInterval(() => {
@@ -1034,7 +1186,9 @@
     $('playBtn').addEventListener('click', togglePlay);
     $('timeSlider').addEventListener('input', (e) => {
       if (isPlaying) togglePlay();
-      updateFrame(Number(e.target.value));
+      currentFrame = Number(e.target.value);
+      if (showMax) setMaxMode(false);
+      else updateFrame(currentFrame);
     });
 
     $('scanBtn').addEventListener('click', () => {
@@ -1085,6 +1239,304 @@
       };
       reader.readAsText(file);
     });
+
+    // ───── 行政區鎖定與出圖 / District lock & PNG export ─────
+    // 色階須與 api.py 的 DEPTH_CLASSES、HAZARD_RGB 一致
+    const DEPTH_LEGEND = [
+      { label: '0.1 ~ 0.3', rgb: [198, 219, 239], a: 178, shallow: true },
+      { label: '0.3 ~ 0.5', rgb: [198, 219, 239], a: 102 },
+      { label: '0.5 ~ 1.0', rgb: [120, 180, 214], a: 102 },
+      { label: '1.0 ~ 2.0', rgb: [66, 146, 198], a: 102 },
+      { label: '2.0 ~ 3.0', rgb: [37, 81, 156], a: 102 },
+      { label: '> 3.0', rgb: [8, 48, 107], a: 102 }
+    ];
+    const HAZARD_LEGEND = { 3: [254, 178, 76], 4: [240, 59, 32], 5: [189, 0, 38] };
+    const DEFAULT_ALPHA_PCT = DEPTH_LEGEND.map(c => Math.round(c.a / 2.55));
+    const ALPHA_STORE_KEY = 'dfmViewer.customAlphas';
+
+    // 目前各級的顏色與不透明度 (0~1，已乘上整體透明度倍率)，畫面圖例與出圖共用
+    function legendClasses() {
+      return DEPTH_LEGEND.map((c, i) => ({
+        ...c,
+        rgb: currentColorScheme === 'hazard' && HAZARD_LEGEND[i] ? HAZARD_LEGEND[i] : c.rgb,
+        alpha: Math.min((customAlphas ? customAlphas[i] * 2.55 : c.a) * opacityScale, 255) / 255
+      })).filter(c => showShallow || !c.shallow);
+    }
+
+    function renderLegend() {
+      $('legendRows').innerHTML = legendClasses().map(c =>
+        `<div style="display: flex; align-items: center; gap: 6px;"><i style="width: 14px; height: 10px; ` +
+        `background: rgba(${c.rgb.join(',')}, ${c.alpha.toFixed(2)}); border: 1px solid rgba(255,255,255,0.2); border-radius: 2px;"></i>` +
+        `${c.label} m (${Math.round(c.alpha * 100)}%)</div>`).join('');
+    }
+
+    // 自訂各級不透明度：開關打開時才送給伺服器；數值記在瀏覽器，下次開啟沿用
+    let savedAlphas = DEFAULT_ALPHA_PCT;
+    try {
+      const s = JSON.parse(localStorage.getItem(ALPHA_STORE_KEY));
+      if (Array.isArray(s) && s.length === DEPTH_LEGEND.length) savedAlphas = s;
+    } catch (e) { /* 無法讀取時用預設值 */ }
+    $('customAlphaBox').innerHTML = DEPTH_LEGEND.map((c, i) =>
+      `<span>${c.label} m</span><input data-alpha="${i}" type="number" min="0" max="100" step="5" value="${savedAlphas[i]}">`).join('');
+
+    function readAlphaInputs() {
+      return [...$('customAlphaBox').querySelectorAll('input')].map(el =>
+        Math.max(0, Math.min(100, Number(el.value) || 0)));
+    }
+
+    function applyCustomAlphas() {
+      const on = $('customAlphaToggle').checked;
+      $('customAlphaBox').style.display = on ? 'grid' : 'none';
+      customAlphas = on ? readAlphaInputs() : null;
+      if (on) {
+        try { localStorage.setItem(ALPHA_STORE_KEY, JSON.stringify(customAlphas)); } catch (e) { /* 略過 */ }
+      }
+      renderLegend();
+      if (catalog) updateFrame(currentFrame);
+    }
+    $('customAlphaToggle').addEventListener('change', applyCustomAlphas);
+    $('customAlphaBox').addEventListener('change', applyCustomAlphas);
+    renderLegend();
+
+    const EXPORT_FONT = '"Noto Sans TC", "Microsoft JhengHei", sans-serif';
+
+    let towns = {};            // 行政區代碼 → GeoJSON feature
+    let districtCode = '';
+    let districtLayer = null;  // 行政區邊界
+    let districtMask = null;   // 區外灰色遮罩
+
+    fetch('/static/towns.geojson').then(r => r.json()).then(gj => {
+      const sel = $('districtSelect');
+      const groups = {};
+      gj.features.forEach(f => {
+        const p = f.properties;
+        towns[p.code] = f;
+        if (!groups[p.county]) {
+          groups[p.county] = document.createElement('optgroup');
+          groups[p.county].label = p.county;
+          sel.appendChild(groups[p.county]);
+        }
+        const opt = document.createElement('option');
+        opt.value = p.code;
+        opt.textContent = p.town;
+        groups[p.county].appendChild(opt);
+      });
+    }).catch(err => console.error('行政區界載入失敗:', err));
+
+    function setDistrict(code) {
+      districtCode = towns[code] ? code : '';
+      [districtLayer, districtMask].forEach(l => l && map.removeLayer(l));
+      districtLayer = districtMask = null;
+      if (districtCode) {
+        const f = towns[districtCode];
+        // 遮罩 = 全世界外框，挖掉行政區的每一塊 (外環當作洞)
+        const world = [[-89, -179], [-89, 179], [89, 179], [89, -179]];
+        const holes = f.geometry.coordinates.map(poly => poly[0].map(([x, y]) => [y, x]));
+        districtMask = L.polygon([world, ...holes], {
+          pane: 'districtPane', stroke: false, fillColor: '#475569', fillOpacity: 0.55, interactive: false
+        }).addTo(map);
+        districtLayer = L.geoJSON(f, {
+          pane: 'districtPane', style: { color: '#dc2626', weight: 3, fill: false }, interactive: false
+        }).addTo(map);
+        map.fitBounds(districtLayer.getBounds(), { padding: [20, 20] });
+      }
+      if (catalog) updateFrame(currentFrame);
+    }
+    $('districtSelect').addEventListener('change', e => setDistrict(e.target.value));
+
+    const loadImage = src => new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error(src));
+      img.src = src;
+    });
+
+    function niceScaleLength(maxMeters) {
+      const p = Math.pow(10, Math.floor(Math.log10(maxMeters)));
+      return [5, 2, 1].map(m => m * p).find(v => v <= maxMeters) || p;
+    }
+
+    // 以目前畫面範圍出圖：底圖抓高一級的圖磚 (解析度 2 倍)，再疊淹水深度、行政區、標題、圖例、比例尺、指北針
+    async function exportPng() {
+      const dict = i18n[currentLang];
+      if (!catalog) { $('exportMsg').textContent = dict.exportNoData; return; }
+      $('exportMsg').textContent = dict.exportBusy;
+      $('exportPngBtn').disabled = true;
+      try {
+        const zoom = map.getZoom();
+        // 底圖有圖磚的最大等級 (例如陰影圖只到 17)；超過時以較低等級的圖磚放大
+        const z = Math.min(Math.round(zoom) + 1, currentBaseLayer.options.maxNativeZoom || 19);
+        const k = Math.pow(2, z - zoom);  // 輸出像素 / 畫面像素
+        const size = map.getSize();
+        const W = Math.round(size.x * k), H = Math.round(size.y * k);
+        const HEAD = Math.round(64 * k), FOOT = Math.round(26 * k);
+        const origin = map.project(map.getBounds().getNorthWest(), z).round();
+        const toPx = latlng => map.project(latlng, z).subtract(origin).add([0, HEAD]);
+
+        const canvas = document.createElement('canvas');
+        canvas.width = W;
+        canvas.height = HEAD + H + FOOT;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, HEAD, W, H);
+        ctx.clip();
+
+        // 1. 底圖圖磚
+        const layer = currentBaseLayer;
+        const subs = layer.options.subdomains || 'abc';
+        const tiles = [];
+        ctx.globalAlpha = baseOpacity;  // 與畫面相同的底圖不透明度 (白底)
+        for (let tx = Math.floor(origin.x / 256); tx <= Math.floor((origin.x + W - 1) / 256); tx++) {
+          for (let ty = Math.floor(origin.y / 256); ty <= Math.floor((origin.y + H - 1) / 256); ty++) {
+            const url = L.Util.template(layer._url, { s: subs[Math.abs(tx + ty) % subs.length], x: tx, y: ty, z, r: '' });
+            const dx = tx * 256 - origin.x, dy = HEAD + ty * 256 - origin.y;
+            tiles.push(loadImage(url).then(img => ctx.drawImage(img, dx, dy, 256, 256)).catch(() => {}));
+          }
+        }
+        await Promise.all(tiles);
+        ctx.globalAlpha = 1;
+
+        // 2. 淹水深度 (與畫面上同一張 PNG，不做平滑以保留網格邊界)
+        ctx.imageSmoothingEnabled = false;
+        for (const ov of Object.values(partitionOverlays)) {
+          if (!ov.options.opacity) continue;
+          const img = await loadImage(ov._url).catch(() => null);
+          if (!img) continue;
+          const nw = toPx(ov.getBounds().getNorthWest()), se = toPx(ov.getBounds().getSouthEast());
+          ctx.drawImage(img, nw.x, nw.y, se.x - nw.x, se.y - nw.y);
+        }
+        ctx.imageSmoothingEnabled = true;
+
+        // 3. 行政區遮罩與邊界
+        const town = districtCode ? towns[districtCode] : null;
+        if (town) {
+          const ringPath = () => {
+            town.geometry.coordinates.forEach(poly => {
+              poly[0].forEach(([x, y], i) => {
+                const p = toPx([y, x]);
+                i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y);
+              });
+              ctx.closePath();
+            });
+          };
+          ctx.beginPath();
+          ctx.rect(0, HEAD, W, H);
+          ringPath();
+          ctx.fillStyle = 'rgba(71, 85, 105, 0.55)';
+          ctx.fill('evenodd');
+          ctx.beginPath();
+          ringPath();
+          ctx.strokeStyle = '#dc2626';
+          ctx.lineWidth = 3 * k;
+          ctx.lineJoin = 'round';
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        // 4. 標題
+        const timeLabel = catalog.time_labels[currentFrame] || '';
+        const area = town ? town.properties.county + town.properties.town : dict.exportAreaAll;
+        const title = $('exportTitle').value.trim()
+          || (showMax ? dict.exportTitleMax(area) : dict.exportTitleAuto(area, timeLabel));
+        const source = dict.exportSource((layer.options.attribution || '').replace(/©\s*/g, ''));
+        await document.fonts.load(`bold ${20 * k}px ${EXPORT_FONT}`, title + source + dict.exportLegend);
+        ctx.fillStyle = '#0f172a';
+        ctx.textBaseline = 'middle';
+        ctx.font = `bold ${22 * k}px ${EXPORT_FONT}`;
+        ctx.fillText(title, 16 * k, HEAD / 2);
+        ctx.strokeStyle = '#0f172a';
+        ctx.lineWidth = 1.5 * k;
+        ctx.strokeRect(0, HEAD, W, H);
+
+        // 5. 圖例 (右下)
+        const rows = legendClasses();
+        const rowH = 20 * k, pad = 10 * k, boxW = 150 * k, boxH = pad * 2 + 24 * k + rows.length * rowH;
+        const bx = W - boxW - 12 * k, by = HEAD + H - boxH - 12 * k;
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+        ctx.fillRect(bx, by, boxW, boxH);
+        ctx.strokeRect(bx, by, boxW, boxH);
+        ctx.fillStyle = '#0f172a';
+        ctx.font = `bold ${14 * k}px ${EXPORT_FONT}`;
+        ctx.fillText(dict.exportLegend, bx + pad, by + pad + 10 * k);
+        ctx.font = `${13 * k}px ${EXPORT_FONT}`;
+        rows.forEach((c, i) => {
+          const y = by + pad + 24 * k + i * rowH;
+          ctx.fillStyle = `rgba(${c.rgb.join(',')}, ${c.alpha})`;
+          ctx.fillRect(bx + pad, y + 3 * k, 26 * k, 14 * k);
+          ctx.strokeStyle = '#64748b';
+          ctx.lineWidth = 1 * k;
+          ctx.strokeRect(bx + pad, y + 3 * k, 26 * k, 14 * k);
+          ctx.fillStyle = '#0f172a';
+          ctx.fillText(c.label, bx + pad + 36 * k, y + 10 * k);
+        });
+
+        // 6. 比例尺 (左下)
+        const lat = map.getCenter().lat;
+        const mpp = 40075016.686 * Math.cos(lat * Math.PI / 180) / (256 * Math.pow(2, z));
+        const meters = niceScaleLength(W * 0.2 * mpp);
+        const barW = meters / mpp, barH = 7 * k;
+        const sx = 20 * k, sy = HEAD + H - 28 * k;
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+        ctx.fillRect(sx - 8 * k, sy - 22 * k, barW + 16 * k, 38 * k);
+        [0, 1, 2, 3].forEach(i => {
+          ctx.fillStyle = i % 2 ? '#ffffff' : '#0f172a';
+          ctx.fillRect(sx + i * barW / 4, sy, barW / 4, barH);
+        });
+        ctx.strokeStyle = '#0f172a';
+        ctx.strokeRect(sx, sy, barW, barH);
+        ctx.fillStyle = '#0f172a';
+        ctx.font = `${12 * k}px ${EXPORT_FONT}`;
+        ctx.textAlign = 'center';
+        ctx.fillText('0', sx, sy - 9 * k);
+        ctx.fillText(meters >= 1000 ? `${meters / 1000} km` : `${meters} m`, sx + barW, sy - 9 * k);
+
+        // 7. 指北針 (右上)
+        const nx = W - 34 * k, ny = HEAD + 22 * k;
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+        ctx.beginPath();
+        ctx.arc(nx, ny + 14 * k, 20 * k, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#0f172a';
+        ctx.beginPath();
+        ctx.moveTo(nx, ny);
+        ctx.lineTo(nx + 9 * k, ny + 26 * k);
+        ctx.lineTo(nx, ny + 20 * k);
+        ctx.lineTo(nx - 9 * k, ny + 26 * k);
+        ctx.closePath();
+        ctx.fill();
+        ctx.font = `bold ${12 * k}px ${EXPORT_FONT}`;
+        ctx.fillText(dict.exportNorth, nx, ny - 8 * k);
+
+        // 8. 頁尾：資料來源與出圖時間
+        ctx.font = `${11 * k}px ${EXPORT_FONT}`;
+        ctx.fillStyle = '#475569';
+        ctx.textAlign = 'left';
+        ctx.fillText(source, 12 * k, HEAD + H + FOOT / 2);
+        ctx.textAlign = 'right';
+        ctx.fillText(new Date().toLocaleString(currentLang === 'zh' ? 'zh-TW' : 'en-US'), W - 12 * k, HEAD + H + FOOT / 2);
+
+        const name = showMax ? `${area}_${dict.exportFileMax}.png`
+          : `${area}_淹水深度_${timeLabel.replace(/[^\w-]+/g, '')}.png`;
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = name;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+        $('exportMsg').textContent = dict.exportDone(name);
+      } catch (err) {
+        console.error('Export error:', err);
+        $('exportMsg').textContent = `${dict.exportFail}: ${err.message}`;
+      } finally {
+        $('exportPngBtn').disabled = false;
+      }
+    }
+    $('exportPngBtn').addEventListener('click', exportPng);
 
     // 共用：在右下角面板繪製折線圖 / Shared chart renderer
     function renderChart(title, tooltipTitle, labels, datasets, yTitle, unit, y2Title) {
@@ -1659,6 +2111,24 @@
     // Initialize Map & Load Data / 初始化地圖並載入資料
     initMap();
     loadCatalog();
+
+    // 設定區塊收合：點標題列只留標題，再點一次展開；狀態記在瀏覽器
+    document.querySelectorAll('.section-box').forEach((box, i) => {
+      const title = box.querySelector(':scope > .section-title');
+      if (!title) return;
+      const key = 'dfmViewer.collapsed.' + (title.querySelector('[data-i18n]')?.dataset.i18n || i);
+      try { box.classList.toggle('collapsed', localStorage.getItem(key) === '1'); } catch (e) { /* 略過 */ }
+      title.addEventListener('click', e => {
+        if (e.target.closest('button, input, select, a')) return;  // 標題列上的按鈕照常運作
+        const collapsed = box.classList.toggle('collapsed');
+        try { localStorage.setItem(key, collapsed ? '1' : '0'); } catch (err) { /* 略過 */ }
+      });
+    });
+
+    // 告訴伺服器頁面還開著 (沒有命令視窗執行時，分頁都關掉後伺服器會自動結束)
+    const sendHeartbeat = () => fetch('/api/heartbeat', { method: 'POST' }).catch(() => {});
+    sendHeartbeat();
+    setInterval(sendHeartbeat, 20000);
   </script>
 </body>
 

@@ -58,7 +58,8 @@ def wait_until_ready(port: int, timeout: float = 300.0) -> bool:
     return False
 
 
-def announce_when_ready(url: str, port: int, lan_url: str, open_browser: bool, opener=webbrowser.open):
+def announce_when_ready(url: str, port: int, lan_url: str, open_browser: bool, opener=webbrowser.open,
+                        windowless: bool = False):
     if not wait_until_ready(port):
         print("⚠️ 伺服器啟動逾時，請關閉此視窗後重新執行。", flush=True)
         return
@@ -67,7 +68,10 @@ def announce_when_ready(url: str, port: int, lan_url: str, open_browser: bool, o
     print(f"👉 圖台網址: {url}")
     if lan_url:
         print(f"🌐 區網其他電腦請用: {lan_url}")
-    print("   結束程式請在此視窗按 Ctrl + C（使用期間請勿關閉此視窗）")
+    if windowless:
+        print(f"   在背景執行；關掉圖台的瀏覽器分頁約 {IDLE_TIMEOUT // 60} 分鐘後自動結束")
+    else:
+        print("   結束程式請在此視窗按 Ctrl + C（使用期間請勿關閉此視窗）")
     print("=" * 60, flush=True)
     if open_browser:
         try:
@@ -76,7 +80,85 @@ def announce_when_ready(url: str, port: int, lan_url: str, open_browser: bool, o
             pass
 
 
+LOG_FILE = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "dfm_viewer" / "viewer.log"
+IDLE_TIMEOUT = 180  # 沒有任何瀏覽器分頁開著 (收不到心跳) 超過這麼多秒就自動結束
+
+
+def redirect_output_to_log():
+    """以 pythonw 執行 (沒有命令視窗) 時，print 與錯誤訊息改寫到記錄檔。"""
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # 附加寫入 (重複雙擊不會洗掉執行中圖台的記錄)；超過 1 MB 才重新開始
+    mode = "w" if LOG_FILE.exists() and LOG_FILE.stat().st_size > 1_000_000 else "a"
+    log = open(LOG_FILE, mode, encoding="utf-8", buffering=1)
+    sys.stdout = sys.stderr = log
+    print(f"\n----- {time.strftime('%Y-%m-%d %H:%M:%S')} -----")
+
+
+def show_error_box(message: str):
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, message, "Delft3D-FM 圖台", 0x10)
+    except Exception:
+        pass
+
+
+def find_running_viewer(host: str, start_port: int, attempts: int = 10) -> str:
+    """
+    已經有「同一版程式」的圖台在執行時回傳它的網址，避免重複啟動。
+    背景的圖台若是更新程式前啟動的舊版，不沿用 (否則新網頁配舊伺服器，新功能會失效)，另外啟動新的。
+    """
+    import json
+    import urllib.request
+    from dfm_viewer import code_id
+    current = code_id()
+    for port in range(start_port, start_port + attempts):
+        url = f"http://127.0.0.1:{port}/"
+        try:
+            with urllib.request.urlopen(url + "api/catalog", timeout=0.5) as r:
+                if json.loads(r.read()).get("code_id") == current:
+                    return url
+        except Exception:
+            continue
+    return ""
+
+
+def exit_when_idle(server, api_module):
+    """
+    瀏覽器分頁每 20 秒送一次心跳；超過 IDLE_TIMEOUT 秒沒收到 (分頁都關了) 就結束伺服器。
+    轉檔中不結束；電腦睡眠喚醒後重新計時，避免一醒來就被關掉。
+    """
+    last_tick = time.time()
+    while not server.should_exit:
+        time.sleep(5)
+        now = time.time()
+        if now - last_tick > 30:  # 剛從睡眠喚醒
+            api_module.touch_heartbeat()
+        last_tick = now
+        if api_module.job.state == "running":
+            api_module.touch_heartbeat()
+        elif now - api_module.last_heartbeat() > IDLE_TIMEOUT:
+            print("沒有開啟中的圖台頁面，自動結束。", flush=True)
+            server.should_exit = True
+
+
 def main():
+    windowless = sys.stdout is None  # 以 pythonw 啟動 (start_viewer.bat)
+    if windowless:
+        redirect_output_to_log()
+    try:
+        run(windowless)
+    except SystemExit:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        if windowless:
+            show_error_box(f"圖台啟動失敗：{e}\n\n詳細訊息請見記錄檔：\n{LOG_FILE}")
+        else:
+            raise
+
+
+def run(windowless: bool):
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
@@ -94,16 +176,25 @@ def main():
                         help="只載入一次所有套件後結束 (第一次安裝後執行，讓防毒掃描與快取在設定階段完成)")
     args = parser.parse_args()
 
-    # 載入 GDAL 等套件需要幾秒；第一次執行時防毒軟體會掃描新安裝的檔案，可能需要 1～2 分鐘。
-    # 先顯示訊息，避免使用者以為畫面當掉而關閉。
-    print("⏳ 圖台啟動中，請稍候…（第一次執行可能需要 1～2 分鐘，請勿關閉此視窗）", flush=True)
-
     src_path = Path(__file__).resolve().parent.parent
     if str(src_path) not in sys.path:
         sys.path.insert(0, str(src_path))
 
+    # 沒有命令視窗時，重複雙擊只打開已在執行的 (同版) 圖台
+    if windowless and not args.data and not args.warmup:
+        running = find_running_viewer(args.host, args.port)
+        if running:
+            if not args.no_browser:
+                webbrowser.open(running)
+            return
+
+    # 載入 GDAL 等套件需要幾秒；第一次執行時防毒軟體會掃描新安裝的檔案，可能需要 1～2 分鐘。
+    # 先顯示訊息，避免使用者以為畫面當掉而關閉。
+    print("⏳ 圖台啟動中，請稍候…（第一次執行可能需要 1～2 分鐘，請勿關閉此視窗）", flush=True)
+
     t0 = time.time()
     import uvicorn
+    from dfm_viewer import api as api_module
     from dfm_viewer.api import app, catalog, open_folder
 
     if args.warmup:
@@ -123,8 +214,14 @@ def main():
 
     # 伺服器真的可以連線後才顯示網址、開瀏覽器 (原本固定等 1.5 秒，啟動較慢時瀏覽器會先開到空白頁)
     threading.Thread(target=announce_when_ready, args=(url, port, lan_url, not args.no_browser),
-                     daemon=True).start()
-    uvicorn.run(app, host=args.host, port=port, log_level="warning")
+                     kwargs={"windowless": windowless}, daemon=True).start()
+    # use_colors=False：沒有命令視窗時 uvicorn 偵測終端機顏色會出錯
+    server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=port, log_level="warning",
+                                           use_colors=False))
+    if windowless:  # 沒有視窗可以按 Ctrl+C，改成分頁都關掉後自動結束
+        api_module.touch_heartbeat()
+        threading.Thread(target=exit_when_idle, args=(server, api_module), daemon=True).start()
+    server.run()
 
 
 if __name__ == "__main__":
