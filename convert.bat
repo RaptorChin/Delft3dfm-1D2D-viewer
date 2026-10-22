@@ -6,7 +6,7 @@ call "%~dp0_setup_env.bat" || (pause & exit /b 1)
 echo 提示：可以直接把資料夾「拖曳」到這個視窗，再按 Enter。
 echo.
 set "IN="
-set /p IN=Delft3D-FM 成果資料夾 (含 XXX_0000_map.nc / XXX_0000_fou.nc)：
+set /p IN=Delft3D-FM 成果資料夾或專案資料夾 (會自動往下層找 map.nc / fou.nc)：
 set "IN=%IN:"=%"
 if "%IN%"=="" (
   echo 未輸入資料夾。
@@ -15,11 +15,15 @@ if "%IN%"=="" (
 )
 
 set "OUT="
-set /p OUT=輸出資料夾 (直接按 Enter = "%IN%_ZARR")：
+set /p OUT=輸出資料夾 (直接按 Enter = 放 .nc 的成果資料夾\ZARR)：
 set "OUT=%OUT:"=%"
-if "%OUT%"=="" set "OUT=%IN%_ZARR"
 
-"%PIXI%" run convert -i "%IN%" -o "%OUT%"
+if "%OUT%"=="" (
+  "%PIXI%" run convert -i "%IN%"
+  set "OUT=上方「輸出目錄」顯示的資料夾"
+) else (
+  "%PIXI%" run convert -i "%IN%" -o "%OUT%"
+)
 echo.
 echo 輸出資料夾：%OUT%
 echo 開圖台後在「資料夾路徑」選擇上面這個資料夾即可。

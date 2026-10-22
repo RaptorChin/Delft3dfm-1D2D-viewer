@@ -14,7 +14,7 @@
   1. 詢問是否安裝 Pixi（管理 Python 環境的工具）→ 按 **Y**
   2. 自動下載並建立執行環境（約 3～10 分鐘，需連網）
 - 之後瀏覽器會自動開啟 `http://127.0.0.1:8088/`。
-- 在左側按「📂 點選瀏覽資料夾」，**直接選 Delft3D-FM 成果資料夾**（含 map.nc / fou.nc）。第一次開啟會自動轉檔並顯示進度，結果存在旁邊的 `<資料夾名稱>_ZARR`，下次就不用再等。
+- 在左側按「📂 點選瀏覽資料夾」，**直接選 Delft3D-FM 成果資料夾或模型專案資料夾**（會自動往下層找 map.nc / fou.nc）。第一次開啟會自動轉檔並顯示進度，結果存在 .nc 所在成果資料夾底下的 `ZARR`，下次就不用再等。
 
 ### 只要轉檔：雙擊 `convert.bat`
 依提示把「模式成果資料夾」拖進視窗後按 Enter。會產出逐時水深 Zarr 與最大淹水深度 GeoTIFF（可用 QGIS 開啟）。
@@ -24,7 +24,7 @@
 
 ```powershell
 cd <本專案資料夾>
-pixi run convert -i "D:\模型\output" -o "D:\模型\output_ZARR"
+pixi run convert -i "D:\模型"          # .nc 在 D:\模型\output → 結果放在 D:\模型\output\ZARR
 pixi run viewer --data "D:\模型\output"
 ```
 </details>

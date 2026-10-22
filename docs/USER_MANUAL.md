@@ -50,8 +50,8 @@
 
 ### 2.1 最簡單的方式：雙擊 `convert.bat`
 1. 雙擊本專案資料夾裡的 **`convert.bat`**。
-2. 把 Delft3D-FM 的成果資料夾（裡面有 `XXX_0000_map.nc`、`XXX_0000_fou.nc`…）**拖曳到黑色視窗**，按 Enter。
-3. 詢問輸出資料夾時，直接按 Enter 會輸出到「成果資料夾名稱 + `_ZARR`」。
+2. 把 Delft3D-FM 的成果資料夾（裡面有 `XXX_0000_map.nc`、`XXX_0000_fou.nc`…），或整個模型專案資料夾（程式會自動往下層找 .nc），**拖曳到黑色視窗**，按 Enter。
+3. 詢問輸出資料夾時，直接按 Enter 會輸出到「放 .nc 的成果資料夾 + `\ZARR`」（例如 `D:\模型\MyModel\output\ZARR`），不會和模型輸入檔混在一起。
 4. 看到「🎉 全部完成！」就完成了。
 
 ### 2.2 指令方式
@@ -71,7 +71,7 @@ pixi run convert -i <成果資料夾> [-o <輸出資料夾>] [--res <解析度>]
 #### 範例
 ```powershell
 # 一般轉檔
-pixi run convert -i "D:\模型\MyModel\output" -o "D:\模型\MyModel\output_ZARR"
+pixi run convert -i "D:\模型\MyModel"          # .nc 在 MyModel\output → 結果放在 MyModel\output\ZARR
 
 # 只要最大淹水深度 GeoTIFF
 pixi run convert -i "D:\模型\MyModel\output" -o "D:\GIS\MyModel" --cog-only
@@ -113,7 +113,7 @@ GeoTIFF 說明：網格外為 NoData（-9999），乾地為 0。
 
 進階啟動參數：
 ```powershell
-pixi run viewer --data "D:\模型\output_ZARR"   # 啟動時直接載入
+pixi run viewer --data "D:\模型\MyModel"       # 啟動時直接載入
 pixi run viewer --port 9000                    # 指定連接埠
 pixi run viewer --host 0.0.0.0                 # 讓同一區網的其他電腦也能開（請注意成果資料保密）
 pixi run viewer --no-browser                   # 不自動開啟瀏覽器
@@ -133,7 +133,7 @@ pixi run viewer --no-browser                   # 不自動開啟瀏覽器
 | 原始成果，原始檔有更新（重跑模擬） | 自動重新轉檔 |
 | 只有 fou.nc、沒有 map.nc | 顯示說明：圖台需要 map.nc 的逐時水深 |
 
-自動轉檔的結果放在原始資料夾旁邊的 **`<資料夾名稱>_ZARR`**（與 `convert.bat` 相同）；若該位置沒有寫入權限（例如唯讀的網路磁碟），改放在本機 `%LOCALAPPDATA%\dfm_viewer\cache\`。同一時間只會執行一個轉檔工作。
+自動轉檔的結果放在 .nc 所在成果資料夾底下的 **`ZARR`**（與 `convert.bat` 相同；可選整個模型專案資料夾，程式會往下層找 .nc）；舊版放在旁邊 `<資料夾名稱>_ZARR` 的結果仍可沿用；若該位置沒有寫入權限（例如唯讀的網路磁碟），改放在本機 `%LOCALAPPDATA%\dfm_viewer\cache\`。同一時間只會執行一個轉檔工作。
 
 ### 3.3 功能
 | 功能 | 操作 |

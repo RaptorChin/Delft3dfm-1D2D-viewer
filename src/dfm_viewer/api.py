@@ -210,7 +210,7 @@ def get_catalog():
 
 
 # ───────────────────── 自動轉檔：選到原始 .nc 資料夾時 ─────────────────────
-# 轉檔結果優先放在旁邊的「<資料夾>_ZARR」(與 convert.bat 相同)；沒有寫入權限 (例如唯讀網路磁碟) 時
+# 轉檔結果優先放在 .nc 所在成果資料夾底下的「ZARR」(與 convert.bat 相同)；沒有寫入權限 (例如唯讀網路磁碟) 時
 # 改放本機快取。partitions_metadata.json 記錄原始檔大小與修改時間，原始檔沒變就直接沿用。
 
 CACHE_ROOT = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "dfm_viewer" / "cache"
@@ -229,13 +229,14 @@ job = ConvertJob()
 _job_lock = threading.Lock()
 
 
-def _output_candidates(src: Path) -> list:
+def _output_candidates(src: Path, partitions: dict) -> list:
     key = hashlib.md5(str(src).lower().encode("utf-8")).hexdigest()[:12]
-    return [src.parent / f"{src.name}_ZARR", CACHE_ROOT / f"{src.name}_{key}"]
+    return [dfm_convert.default_output_dir(src, partitions), CACHE_ROOT / f"{src.name}_{key}"]
 
 
-def _find_up_to_date(src: Path, signature: dict):
-    for cand in _output_candidates(src):
+def _find_up_to_date(src: Path, partitions: dict, signature: dict):
+    # 舊版放在旁邊的「<資料夾>_ZARR」，仍可沿用
+    for cand in _output_candidates(src, partitions) + [src.parent / f"{src.name}_ZARR"]:
         meta = cand / "partitions_metadata.json"
         try:
             with open(meta, encoding="utf-8-sig") as f:
@@ -249,8 +250,8 @@ def _find_up_to_date(src: Path, signature: dict):
     return None
 
 
-def _writable_output(src: Path) -> Path:
-    for cand in _output_candidates(src):
+def _writable_output(src: Path, partitions: dict) -> Path:
+    for cand in _output_candidates(src, partitions):
         try:
             cand.mkdir(parents=True, exist_ok=True)
             probe = cand / ".write_test"
@@ -259,7 +260,7 @@ def _writable_output(src: Path) -> Path:
             return cand
         except OSError:
             continue
-    raise ValueError(f"找不到可寫入的位置存放轉檔結果 (試過: {', '.join(map(str, _output_candidates(src)))})")
+    raise ValueError(f"找不到可寫入的位置存放轉檔結果 (試過: {', '.join(map(str, _output_candidates(src, partitions)))})")
 
 
 def prepare_folder(target_path: str):
@@ -269,20 +270,24 @@ def prepare_folder(target_path: str):
     p = Path(target_path.strip().strip('"')).resolve()
     if not p.exists():
         raise ValueError(f"路徑不存在: {target_path}")
-    if _find_zarr(p):
+    # 直接選到 Zarr 資料夾 (或其中的 .zarr)
+    if p.name.endswith(".zarr") or [z for z in p.glob("*.zarr") if z.name not in NON_2D_ZARR]:
         return "ready", p
+    # 先找原始 .nc (可能在下層)，才能判斷 output\ZARR 裡的轉檔結果是否過期
     partitions = dfm_convert.detect_dfm_partitions(str(p))
     if not partitions:
+        if _find_zarr(p):  # 沒有 .nc，但下層有 Zarr 成果
+            return "ready", p
         raise ValueError(f"在 {p} 中找不到 Zarr 成果，也找不到 Delft3D-FM 的 map.nc / fou.nc")
     if not any("map" in f for f in partitions.values()):
         raise ValueError("這個資料夾只有 fou.nc（最大值），沒有 map.nc（逐時水深），圖台無法播放時序。\n"
                          "如只需要最大淹水深度圖，請用 convert.bat 或 pixi run convert --cog-only 產製 GeoTIFF。")
     his = dfm_convert.detect_his_file(str(p), partitions)
     extra = ([his] + dfm_convert.find_structure_files(partitions, str(p))) if his else []
-    done = _find_up_to_date(p, dfm_convert.source_signature(partitions, extra))
+    done = _find_up_to_date(p, partitions, dfm_convert.source_signature(partitions, extra))
     if done:
         return "ready", done
-    return "convert", (p, partitions, _writable_output(p))
+    return "convert", (p, partitions, _writable_output(p, partitions))
 
 
 def _run_conversion(src: Path, partitions: dict, out: Path):

@@ -877,6 +877,16 @@ def source_signature(partitions: Dict[str, Dict[str, str]], extra: Optional[List
     return dict(sorted(sig.items()))
 
 
+def default_output_dir(input_dir, partitions: Optional[Dict[str, Dict[str, str]]] = None) -> Path:
+    """
+    轉檔結果的預設位置：放 map.nc / fou.nc 的成果資料夾底下的 ZARR (不會和專案的輸入檔混在一起)。
+    指定整個專案資料夾時，.nc 在下層的 output 裡，結果就放在 output/ZARR。
+    """
+    folders = {str(Path(f).parent) for fs in (partitions or {}).values() for f in fs.values()}
+    base = Path(os.path.commonpath(sorted(folders))) if folders else Path(input_dir).resolve()
+    return base / "ZARR"
+
+
 def process_dfm_directory_pipeline(input_dir: str, output_dir: Optional[str] = None,
                                    crs_code: str = "EPSG:3826", res: Optional[float] = None,
                                    skip_zarr: bool = False,
@@ -900,7 +910,7 @@ def process_dfm_directory_pipeline(input_dir: str, output_dir: Optional[str] = N
         print(f"⚠️ 在 {input_dir} 中未找到任何 Delft3D-FM 輸出檔案 (*_map.nc / *_fou.nc)")
         return {}
 
-    target_out_dir = Path(output_dir or input_dir).resolve()
+    target_out_dir = Path(output_dir).resolve() if output_dir else default_output_dir(input_dir, partitions)
     target_out_dir.mkdir(parents=True, exist_ok=True)
 
     first = next(iter(partitions.values()))
@@ -1022,9 +1032,10 @@ def main():
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument("-i", "--input-dir", required=True,
-                        help="Delft3D-FM 成果資料夾 (含 XXX_0000_map.nc / XXX_0000_fou.nc 等)")
+                        help="Delft3D-FM 成果資料夾 (含 XXX_0000_map.nc / XXX_0000_fou.nc 等)；\n"
+                             "也可指定整個專案資料夾，會自動往下層尋找 .nc")
     parser.add_argument("-o", "--output-dir", default=None,
-                        help="輸出資料夾 (預設與輸入資料夾相同)")
+                        help="輸出資料夾 (預設: <放 .nc 的成果資料夾>\\ZARR)")
     parser.add_argument("--crs", default="EPSG:3826",
                         help="NetCDF 內讀不到坐標系時使用的預設值 (預設: EPSG:3826 TWD97/TM2)")
     parser.add_argument("--res", type=float, default=None,

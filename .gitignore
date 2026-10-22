@@ -1,5 +1,6 @@
 # 模式成果資料 (體積大且可能含未公開資料，不進版本控制)
 output/
+result/
 *.zarr/
 *_cog.tif
 partitions_metadata.json
