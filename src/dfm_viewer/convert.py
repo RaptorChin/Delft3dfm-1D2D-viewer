@@ -46,7 +46,7 @@ from rasterio.transform import Affine
 warnings.filterwarnings("ignore", message="Consolidated metadata", category=UserWarning)
 
 NODATA = -9999.0
-OUTPUT_FORMAT_VERSION = 4  # 轉檔產物格式；圖台遇到較舊版本會自動重轉 (v2 起含 1D 網路，v3 起含觀測站／結構物，v4 結構物改用設計位置)
+OUTPUT_FORMAT_VERSION = 5  # 轉檔產物格式；圖台遇到較舊版本會自動重轉 (v2 起含 1D 網路，v3 起含觀測站／結構物，v4 結構物改用設計位置，v5 解析度改看全部分區)
 TIME_CHUNK = 8  # 每批讀寫的時間步數 (控制記憶體用量)
 
 
@@ -299,21 +299,24 @@ class GridSpec:
         return Affine(r, 0.0, gx0, 0.0, -r, gy1), nx, ny
 
 
-def auto_grid_spec(ds: xr.Dataset, crs: str, res: Optional[float]) -> GridSpec:
+def auto_grid_spec(paths: List[str], crs: str, res: Optional[float]) -> GridSpec:
     """
     未指定解析度時，取「最小的常見網格寬度」(第 10 百分位，避開零星的極小網格)，
     局部加密網格 (例如 5/10/40 m) 會以最細的 5 m 輸出；並以網格節點對齊，讓像素與模式網格對齊。
+    須看所有分區：加密區可能只在部分分區 (例如 0000 只有 10 m 以上，5 m 在其他分區)。
     """
-    vx, vy = _face_vertices(ds)
+    widths, xmin, ymin = [], np.inf, np.inf
+    for path in paths:
+        with open_nc(path) as ds:
+            vx, vy = _face_vertices(ds)
+        widths.append(np.nanmax(vx, axis=1) - np.nanmin(vx, axis=1))
+        xmin, ymin = min(xmin, float(np.nanmin(vx))), min(ymin, float(np.nanmin(vy)))
     if res is None or res <= 0:
-        widths = np.nanmax(vx, axis=1) - np.nanmin(vx, axis=1)
-        res = float(np.nanpercentile(widths, 10))
+        res = float(np.nanpercentile(np.concatenate(widths), 10))
         if not np.isfinite(res) or res <= 0:
             res = 0.00005 if crs == "EPSG:4326" else 5.0
         res = round(res, 6)
-    x0 = float(np.nanmin(vx)) % res
-    y0 = float(np.nanmin(vy)) % res
-    return GridSpec(res=res, x0=x0, y0=y0)
+    return GridSpec(res=res, x0=xmin % res, y0=ymin % res)
 
 
 def build_index_raster(polygons: List[np.ndarray], cx: np.ndarray, cy: np.ndarray,
@@ -916,7 +919,7 @@ def process_dfm_directory_pipeline(input_dir: str, output_dir: Optional[str] = N
     first = next(iter(partitions.values()))
     with open_nc(first.get("map") or first["fou"]) as ds0:
         crs = detect_crs(ds0, crs_code)
-        grid = auto_grid_spec(ds0, crs, res)
+    grid = auto_grid_spec([f.get("fou") or f["map"] for f in partitions.values()], crs, res)
 
     print("=" * 70)
     print("🚀 Delft3D-FM 多分區轉檔開始")
