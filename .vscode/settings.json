@@ -1,0 +1,6 @@
+{
+  // 批次檔以 Big5 (cp950) 儲存，cmd 才能正確顯示中文；VS Code 預設 UTF-8 會顯示成亂碼
+  "[bat]": {
+    "files.encoding": "cp950"
+  }
+}
