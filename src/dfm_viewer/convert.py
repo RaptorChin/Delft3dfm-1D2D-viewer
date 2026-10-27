@@ -13,7 +13,7 @@ Delft3D-FM Output Converter: Map/Fou NetCDF to Zarr & Cloud Optimized GeoTIFF (C
    各分區一份，另輸出一份全區合併檔 (*_max_depth_merged_cog.tif)，可直接在 QGIS 開啟。
 
 7. 1D 渠道／管線 (mesh1d) 依網路實際線形輸出向量線段 (mesh1d_network.geojson) 與逐時數值
-   (mesh1d.zarr：水深、水位、地面溢淹水深、流量)，供圖台疊加顯示。
+   (mesh1d.zarr：水深、水位、流量、管線滿管度)，供圖台疊加顯示。
 """
 
 import argparse
@@ -46,7 +46,7 @@ from rasterio.transform import Affine
 warnings.filterwarnings("ignore", message="Consolidated metadata", category=UserWarning)
 
 NODATA = -9999.0
-OUTPUT_FORMAT_VERSION = 6  # 轉檔產物格式；圖台遇到較舊版本會自動重轉 (v2 起含 1D 網路，v3 起含觀測站／結構物，v4 結構物改用設計位置，v5 解析度改看全部分區，v6 管線滿管度)
+OUTPUT_FORMAT_VERSION = 7  # 轉檔產物格式；圖台遇到較舊版本會自動重轉 (v2 起含 1D 網路，v3 起含觀測站／結構物，v4 結構物改用設計位置，v5 解析度改看全部分區，v6 管線滿管度，v7 修正滿管度管底高程)
 TIME_CHUNK = 8  # 每批讀寫的時間步數 (控制記憶體用量)
 
 
@@ -472,10 +472,9 @@ MESH1D_VARS = {
     # 輸出名稱: (map.nc 變數, 位置, 兩端點合併方式)
     "waterdepth": ("mesh1d_waterdepth", "node", "max"),
     "s1": ("mesh1d_s1", "node", "mean"),
-    "waterdepth_on_ground": ("mesh1d_waterdepth_on_ground", "node", "max"),
     "q1": ("mesh1d_q1", "edge", None),
 }
-MESH1D_FORMAT = 2  # v2 起含管線滿管度 (fill，%)
+MESH1D_FORMAT = 3  # v2 起含管線滿管度 (fill，%)，v3 管底以模型底床高程為下限
 
 
 # ── 管線滿管度 ──
@@ -625,6 +624,9 @@ def extract_mesh1d(map_path: str, part_id: str, pipes: Optional[Dict[str, Tuple[
         nb = ds["mesh1d_node_branch"].values.astype(int) if "mesh1d_node_branch" in ds else None
         no = ds["mesh1d_node_offset"].values if "mesh1d_node_offset" in ds else None
         branch_ids = ds["network_branch_id"].values if "network_branch_id" in ds else None
+        # 模型實際使用的底床高程 (節點)：crsloc 沒寫 shift (預設 0) 或 shift 有誤時，管底以此為下限，
+        # 否則管底被當成 0 m，滿管度會全部超過 100%
+        bl = ds["mesh1d_flowelem_bl"].values.astype("f8") if "mesh1d_flowelem_bl" in ds else None
 
         # 連線所在的 branch 與里程 (連線中點)；舊版檔案沒有時，以兩端節點推算
         if "mesh1d_edge_branch" in ds and "mesh1d_edge_offset" in ds:
@@ -653,6 +655,8 @@ def extract_mesh1d(map_path: str, part_id: str, pipes: Optional[Dict[str, Tuple[
             if sec is not None:
                 ch, inv, hh = sec
                 invert[k] = np.interp(float(eoff[e]), ch, inv)
+                if bl is not None:
+                    invert[k] = np.fmax(invert[k], (bl[a] + bl[b]) / 2)
                 height[k] = np.interp(float(eoff[e]), ch, hh)
                 prop.update(pipe=True, height=round(float(height[k]), 3), invert=round(float(invert[k]), 3))
             props.append(prop)

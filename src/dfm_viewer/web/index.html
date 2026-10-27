@@ -685,8 +685,7 @@
         lbl1DVar: "顯示項目",
         lbl1DMax: "顯示全時段最大值（不隨時間播放）",
         txt1DHint: "點擊線段可查看該段歷線。灰色＝無資料或低於門檻。滿管度 100% 表示管線已滿，多出的水由人孔溢流到 2D 網格。",
-        var1D: { auto: "渠道水深＋管線滿管度", waterdepth: "水深", fill: "管線滿管度", s1: "水位", waterdepth_on_ground: "地面溢淹水深", q1: "流量" },
-        lgd1DChannel: "渠道水深",
+        var1D: { auto: "水位(m)+滿管度(%)", waterdepth: "水深", fill: "管線滿管度", s1: "水位", q1: "流量" },
         lgd1DPipe: "管線滿管度（水位 − 管底）÷ 管高",
         lgd1DFull: "100% 滿管",
         popup1DHeight: "管高",
@@ -791,8 +790,7 @@
         lbl1DVar: "Variable",
         lbl1DMax: "Show maximum over all times (static)",
         txt1DHint: "Click a segment to view its time series. Grey = no data / below threshold. Pipe fill 100% means the pipe is full; excess water overflows from manholes onto the 2D grid.",
-        var1D: { auto: "Channel depth + pipe fill", waterdepth: "Water depth", fill: "Pipe fill", s1: "Water level", waterdepth_on_ground: "Depth on ground", q1: "Discharge" },
-        lgd1DChannel: "Channel depth",
+        var1D: { auto: "Water level (m) + fill (%)", waterdepth: "Water depth", fill: "Pipe fill", s1: "Water level", q1: "Discharge" },
         lgd1DPipe: "Pipe fill (level − invert) ÷ height",
         lgd1DFull: "100% full",
         popup1DHeight: "Pipe height",
@@ -1661,7 +1659,8 @@
     }
 
     // ───────────── 1D 渠道／管線 / 1D network ─────────────
-    const UNITS_1D = { auto: '', waterdepth: 'm', fill: '%', s1: 'm', waterdepth_on_ground: 'm', q1: 'm³/s' };
+    const UNITS_1D = { auto: '', waterdepth: 'm', fill: '%', s1: 'm', q1: 'm³/s' };
+    const HIDDEN_1D = ['waterdepth_on_ground'];  // 不提供的項目 (舊版轉檔結果仍含地面溢淹水深)
     const RAMP_1D = ['#ffffb2', '#fecc5c', '#fd8d3c', '#f03b20', '#bd0026'];  // 暖色系，與 2D 藍色區隔
     const NODATA_1D = '#94a3b8';
     // 管線滿管度分級 [下限%, 顏色, 線寬]：紫色系與渠道暖色區隔，滿管 (100%) 用粗洋紅線突顯
@@ -1682,9 +1681,9 @@
 
     function selected1DVar() { return $('mesh1dVarSelect').value || 'waterdepth'; }
 
-    // 「渠道水深＋管線滿管度」模式：管線段畫滿管度，渠道段畫水深
+    // 「水位＋滿管度」模式：只顯示管線段 (畫滿管度)，渠道段隱藏；歷線另以右側縱軸畫水位
     function var1DFor(props, mode) {
-      return mode === 'auto' ? (props.pipe ? 'fill' : 'waterdepth') : mode;
+      return mode === 'auto' ? 'fill' : mode;
     }
 
     function style1D(props, mode) {
@@ -1721,12 +1720,12 @@
       const sel = $('mesh1dVarSelect');
       const keep = sel.value;
       const names = i18n[currentLang].var1D;
-      // 依固定順序列出 (渠道＋管線 → 水深 → 滿管度 → 水位 → 地面溢淹 → 流量)，資料內有但未列入的變數放最後；
-      // 有滿管度 (模型找得到斷面檔) 時才提供「渠道水深＋管線滿管度」，並設為預設
-      const hasFill = 'fill' in catalog.mesh1d.vars && 'waterdepth' in catalog.mesh1d.vars;
+      // 依固定順序列出 (水位＋滿管度 → 水深 → 滿管度 → 水位 → 流量)，資料內有但未列入的變數放最後；
+      // 有滿管度 (模型找得到斷面檔) 時才提供「水位＋滿管度」，並設為預設
+      const hasFill = 'fill' in catalog.mesh1d.vars && 's1' in catalog.mesh1d.vars;
       const avail = k => k === 'auto' ? hasFill : k in catalog.mesh1d.vars;
       const order = Object.keys(UNITS_1D).filter(avail)
-        .concat(Object.keys(catalog.mesh1d.vars).filter(k => !(k in UNITS_1D)));
+        .concat(Object.keys(catalog.mesh1d.vars).filter(k => !(k in UNITS_1D) && !HIDDEN_1D.includes(k)));
       sel.innerHTML = order
         .map(k => `<option value="${k}">${names[k] || k}${UNITS_1D[k] ? ` (${UNITS_1D[k]})` : ''}</option>`).join('');
       sel.value = keep && avail(keep) ? keep
@@ -1745,15 +1744,16 @@
           return `<span style="display: inline-flex; align-items: center; gap: 3px;">` +
             `<span style="display: inline-block; width: 16px; height: ${w}px; background: ${color}; border-radius: 2px;"></span>${label}</span>`;
         }).join('') + '</div>';
-      $('mesh1dRampBox').style.display = mode === 'fill' ? 'none' : '';
-      if (mode === 'fill') return;
-      const v = mode === 'auto' ? 'waterdepth' : mode;
+      const fillOnly = mode === 'auto' || mode === 'fill';  // 只畫滿管度分級，不需要連續色階
+      $('mesh1dRampBox').style.display = fillOnly ? 'none' : '';
+      if (fillOnly) return;
+      const v = mode;
       const [lo, hi] = catalog.mesh1d.vars[v];
       $('mesh1dRamp').style.background = `linear-gradient(to right, ${RAMP_1D.join(',')})`;
       const isLog = v === 'q1';
       $('mesh1dMin').textContent = isLog ? `${Q_MIN}` : lo.toFixed(2);
       $('mesh1dMax').textContent = `≥ ${hi.toFixed(isLog ? 0 : 2)}`;
-      const name = mode === 'auto' ? dict.lgd1DChannel : (dict.var1D[v] || v);
+      const name = dict.var1D[v] || v;
       $('mesh1dUnit').textContent = `${name} (${UNITS_1D[v] || ''})${isLog ? (currentLang === 'zh' ? '・對數' : ' · log') : ''}`;
     }
 
@@ -1794,7 +1794,7 @@
     async function update1D(frameIdx) {
       if (!mesh1dLayer || !catalog || !catalog.mesh1d) return;
       const mode = selected1DVar();
-      const vars = mode === 'auto' ? ['waterdepth', 'fill'] : [mode];
+      const vars = mode === 'auto' ? ['fill', 's1'] : [mode];
       const t = $('mesh1dMaxToggle').checked ? -1 : frameIdx;
       const req = ++mesh1dReq;
       try {
@@ -1805,7 +1805,10 @@
         const full = [];
         mesh1dLayer.eachLayer(l => {
           const p = l.feature.properties;
-          l.setStyle(style1D(p, mode));
+          const hide = mode === 'auto' && !p.pipe;  // 「水位＋滿管度」只顯示管線
+          l.setStyle(hide ? { stroke: false } : { stroke: true, ...style1D(p, mode) });
+          l.options.interactive = !hide;  // 隱藏的渠道段不可點擊
+          if (hide) return;
           if (var1DFor(p, mode) === 'fill' && (mesh1dValues.fill[p.id] ?? 0) >= 100) full.push(l);
         });
         full.forEach(l => l.bringToFront());  // 滿管段畫在最上層，不被其他線段蓋住
@@ -1821,13 +1824,16 @@
       const pipeInfo = props.pipe
         ? `<b>${dict.popup1DHeight}:</b> ${props.height} m<br><b>${dict.popup1DInvert}:</b> ${props.invert} m<br>` : '';
       const curText = cur === null || cur === undefined ? '-' : (v === 'fill' ? cur.toFixed(1) : cur);
+      const lvl = selected1DVar() === 'auto' ? (mesh1dValues.s1 || [])[props.id] : undefined;
+      const lvlInfo = lvl === undefined ? ''
+        : `<br><b>${dict.var1D.s1}:</b> ${lvl === null ? '-' : lvl.toFixed(3)} m`;
       L.popup().setLatLng(latlng).setContent(`
         <div style="font-size:0.82rem; color:#0f172a; line-height:1.4;">
           <b style="color:#c2410c;">${dict.popup1DTitle}</b><br>
           <b>${dict.popup1DBranch}:</b> ${props.branch || '-'}<br>
           <b>${dict.popup1DPart}:</b> ${props.partition}<br>
           ${pipeInfo}
-          <b>${dict.var1D[v] || v}:</b> <span style="color:#dc2626;font-weight:700;">${curText} ${UNITS_1D[v] || ''}</span>
+          <b>${dict.var1D[v] || v}:</b> <span style="color:#dc2626;font-weight:700;">${curText} ${UNITS_1D[v] || ''}</span>${lvlInfo}
         </div>`).openOn(map);
       try {
         const data = await (await fetch(`/api/mesh1d/series/${props.id}`)).json();
@@ -1867,13 +1873,29 @@
           fill: false
         });
       }
+      const withLevel = selected1DVar() === 'auto' && v === 'fill' && data.series.s1;
+      if (withLevel) {  // 「水位＋滿管度」：右側縱軸畫水位
+        const lvl = data.series.s1.filter(x => x !== null);
+        datasets.push({
+          label: `${dict.var1D.s1} (m)${lvl.length ? ` Max: ${Math.max(...lvl).toFixed(3)}` : ''}`,
+          data: data.series.s1,
+          borderColor: '#0ea5e9',
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.3,
+          fill: false,
+          yAxisID: 'y2'
+        });
+      }
       renderChart(
         `${dict.chart1DTitle} - ${props.branch || ''}`,
         `${dict.popup1DPart} ${props.partition}`,
         data.time_labels,
         datasets,
         `${dict.var1D[v] || v} (${UNITS_1D[v] || ''})`,
-        v === 's1' ? 'level' : 'value'
+        // 水位、水深的縱軸依資料範圍縮放 (不從 0 起算)，否則深水段的水深變化會被壓成一條平線
+        ['s1', 'waterdepth'].includes(v) ? 'level' : 'value',
+        withLevel ? `${dict.var1D.s1} (m)` : undefined
       );
     }
 
