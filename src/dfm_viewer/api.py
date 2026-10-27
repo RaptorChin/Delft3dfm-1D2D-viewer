@@ -288,6 +288,7 @@ def prepare_folder(target_path: str):
                          "如只需要最大淹水深度圖，請用 convert.bat 或 pixi run convert --cog-only 產製 GeoTIFF。")
     his = dfm_convert.detect_his_file(str(p), partitions)
     extra = ([his] + dfm_convert.find_structure_files(partitions, str(p))) if his else []
+    extra += sum(dfm_convert.find_crs_files(partitions, str(p)), [])  # 斷面檔變動 → 管線滿管度要重算
     done = _find_up_to_date(p, partitions, dfm_convert.source_signature(partitions, extra))
     if done:
         return "ready", done
@@ -585,6 +586,11 @@ def _clean(values: np.ndarray, digits: int = 3) -> list:
     return [None if not np.isfinite(v) else round(float(v), digits) for v in values]
 
 
+def _capped(da: xr.DataArray) -> xr.DataArray:
+    """滿管度上限 100% (滿管後的水由人孔溢出到 2D 網格)；舊版轉檔結果可能存有超過 100 的值，在這裡一併截斷。"""
+    return da.clip(max=100.0) if da.name == "fill" else da
+
+
 @app.get("/api/mesh1d/geometry")
 def mesh1d_geometry():
     """1D 線段 GeoJSON (WGS84)；properties.id 對應 /api/mesh1d/frame 回傳陣列的位置。"""
@@ -601,7 +607,7 @@ def mesh1d_frame(frame_idx: int, var: str = "waterdepth"):
     ds = _mesh1d_ds()
     if var not in ds:
         raise HTTPException(400, f"1D 成果中沒有變數 {var}")
-    da = ds[var]
+    da = _capped(ds[var])
     if frame_idx < 0:
         vals = (np.abs(da) if var == "q1" else da).max("time", skipna=True).values
     else:
@@ -617,7 +623,7 @@ def mesh1d_series(edge_id: int):
         raise HTTPException(404, "找不到指定線段")
     sel = ds.isel(edge=edge_id)
     return {"time_labels": catalog.time_labels,
-            "series": {k: _clean(sel[k].values, 4) for k in ds.data_vars}}
+            "series": {k: _clean(_capped(sel[k]).values, 4) for k in ds.data_vars}}
 
 
 # ───────────────────────────── 觀測站、結構物 (his) ─────────────────────────────
@@ -677,6 +683,15 @@ def his_series(cat: str, idx: int):
                                               "units": v.attrs.get("units", ""),
                                               "data": _clean(v.isel({cat: idx}).values, 4)}
     return {"time_labels": labels, "series": series}
+
+
+@app.middleware("http")
+async def no_cache_page(request, call_next):
+    """網頁本身 (index.html) 要求瀏覽器每次確認是否有新版，避免程式更新後還在用快取的舊網頁。"""
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.endswith(".html"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 if WEB_DIR.exists():

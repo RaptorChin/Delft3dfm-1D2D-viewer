@@ -46,7 +46,7 @@ from rasterio.transform import Affine
 warnings.filterwarnings("ignore", message="Consolidated metadata", category=UserWarning)
 
 NODATA = -9999.0
-OUTPUT_FORMAT_VERSION = 5  # 轉檔產物格式；圖台遇到較舊版本會自動重轉 (v2 起含 1D 網路，v3 起含觀測站／結構物，v4 結構物改用設計位置，v5 解析度改看全部分區)
+OUTPUT_FORMAT_VERSION = 6  # 轉檔產物格式；圖台遇到較舊版本會自動重轉 (v2 起含 1D 網路，v3 起含觀測站／結構物，v4 結構物改用設計位置，v5 解析度改看全部分區，v6 管線滿管度)
 TIME_CHUNK = 8  # 每批讀寫的時間步數 (控制記憶體用量)
 
 
@@ -475,7 +475,88 @@ MESH1D_VARS = {
     "waterdepth_on_ground": ("mesh1d_waterdepth_on_ground", "node", "max"),
     "q1": ("mesh1d_q1", "edge", None),
 }
-MESH1D_FORMAT = 1
+MESH1D_FORMAT = 2  # v2 起含管線滿管度 (fill，%)
+
+
+# ── 管線滿管度 ──
+# map.nc 沒有斷面資料，要讀模型的 crsdef.ini (斷面形狀) 與 crsloc.ini (斷面位置＋管底高程 shift)。
+# 斷面為封閉形狀 (圓管、蛋形管、Closed = yes 的矩形等) 的 branch 視為管線；
+# 滿管度 = (水位 - 管底) / 管高 × 100%，超過 100% 代表水位已高於管頂 (滿管、壓力流)。
+
+def find_model_files(partitions: Dict[str, Dict[str, str]], input_dir: str, key: str,
+                     fallback: str = "") -> List[str]:
+    """
+    找模型輸入檔：在成果資料夾、上一層、上兩層找 .mdu，讀其中的 key (例 StructureFile、CrossDefFile)；
+    找不到 .mdu 時，也接受直接放在成果資料夾的 fallback 檔名。
+    """
+    folders = {Path(f).parent for fs in partitions.values() for f in fs.values()} or {Path(input_dir).resolve()}
+    found: List[str] = []
+    for folder in sorted(folders):
+        for d in (folder, folder.parent, folder.parent.parent):
+            for mdu in sorted(d.glob("*.mdu")):
+                for raw in mdu.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    m = re.match(rf"\s*{key}\s*=\s*([^#]*)", raw, re.IGNORECASE)
+                    if m:
+                        for name in re.split(r"[;\s]+", m.group(1).strip()):
+                            p = (mdu.parent / name).resolve()
+                            if name and p.is_file() and str(p) not in found:
+                                found.append(str(p))
+            if found:
+                return found
+        direct = folder / fallback if fallback else None
+        if direct is not None and direct.is_file():
+            return [str(direct)]
+    return found
+
+
+def find_crs_files(partitions: Dict[str, Dict[str, str]], input_dir: str) -> Tuple[List[str], List[str]]:
+    """(斷面形狀檔 crsdef.ini 清單, 斷面位置檔 crsloc.ini 清單)；兩者缺一時都回傳空清單。"""
+    defs = find_model_files(partitions, input_dir, "CrossDefFile", "crsdef.ini")
+    locs = find_model_files(partitions, input_dir, "CrossLocFile", "crsloc.ini")
+    return (defs, locs) if defs and locs else ([], [])
+
+
+def _closed_height(defn: Dict[str, str]) -> Optional[float]:
+    """封閉斷面 (管線) 的管高；開放斷面 (渠道、河道) 回傳 None。"""
+    try:
+        kind = defn.get("type", "").lower()
+        if kind == "circle":
+            return float(defn["diameter"])
+        if kind == "egg":  # 蛋形管：高 = 1.5 × 寬
+            return 1.5 * float(defn["width"])
+        if defn.get("closed", "").lower() not in ("yes", "1", "true"):
+            return None
+        if kind == "rectangle":
+            return float(defn["height"])
+        if "levels" in defn:  # zw / tabulated
+            lv = [float(v) for v in defn["levels"].split()]
+            return max(lv) - min(lv)
+    except (KeyError, ValueError):
+        pass
+    return None
+
+
+def read_pipe_sections(crsdef_files: List[str], crsloc_files: List[str]) -> Dict[str, Tuple[np.ndarray, ...]]:
+    """{管線 branch id: (里程, 管底高程, 管高)}，各陣列依里程排序。"""
+    heights = {}
+    for f in crsdef_files:
+        for b in _ini_blocks(Path(f)):
+            if b.get("__section__") == "definition" and "id" in b:
+                h = _closed_height(b)
+                if h is not None and h > 0:
+                    heights[b["id"]] = h
+    rows: Dict[str, list] = {}
+    for f in crsloc_files:
+        for b in _ini_blocks(Path(f)):
+            h = heights.get(b.get("definitionid", ""))
+            if b.get("__section__") != "crosssection" or h is None or "branchid" not in b:
+                continue
+            try:
+                rows.setdefault(b["branchid"], []).append(
+                    (float(b.get("chainage", 0)), float(b.get("shift", 0)), h))
+            except ValueError:
+                continue
+    return {br: tuple(np.array(c) for c in zip(*sorted(r))) for br, r in rows.items()}
 
 
 def _chars(var, i) -> str:
@@ -517,8 +598,11 @@ def _sub_polyline(geom, branch: int, s0: float, s1: float):
     return pts if s0 <= s1 else pts[::-1]
 
 
-def extract_mesh1d(map_path: str, part_id: str):
-    """讀一個分區 map.nc 的 1D 連線：回傳 (線形清單[投影坐標], 屬性清單, {變數: (time, edge) 陣列}, time)。無 1D 時回傳 None。"""
+def extract_mesh1d(map_path: str, part_id: str, pipes: Optional[Dict[str, Tuple[np.ndarray, ...]]] = None):
+    """
+    讀一個分區 map.nc 的 1D 連線：回傳 (線形清單[投影坐標], 屬性清單, {變數: (time, edge) 陣列}, time)。無 1D 時回傳 None。
+    pipes (read_pipe_sections 的結果) 有資料時，另外計算管線滿管度 fill (%)；渠道段為 NaN。
+    """
     with open_nc(map_path) as ds:
         if "mesh1d_edge_nodes" not in ds or "mesh1d_node_x" not in ds:
             return None
@@ -542,8 +626,19 @@ def extract_mesh1d(map_path: str, part_id: str):
         no = ds["mesh1d_node_offset"].values if "mesh1d_node_offset" in ds else None
         branch_ids = ds["network_branch_id"].values if "network_branch_id" in ds else None
 
+        # 連線所在的 branch 與里程 (連線中點)；舊版檔案沒有時，以兩端節點推算
+        if "mesh1d_edge_branch" in ds and "mesh1d_edge_offset" in ds:
+            eb_var = ds["mesh1d_edge_branch"]
+            ebr = eb_var.values.astype(int) - int(eb_var.attrs.get("start_index", 0))
+            eoff = ds["mesh1d_edge_offset"].values
+        else:
+            ebr = nb[edges[:, 0]] if nb is not None else np.full(len(edges), -1)
+            eoff = (no[edges[:, 0]] + no[edges[:, 1]]) / 2 if no is not None else np.zeros(len(edges))
+
         lines, props = [], []
-        for e in idx:
+        invert = np.full(len(idx), np.nan, dtype="f4")  # 管線段的管底高程與管高 (渠道段為 NaN)
+        height = np.full(len(idx), np.nan, dtype="f4")
+        for k, e in enumerate(idx):
             a, b = edges[e]
             pts = None
             if geom is not None and nb is not None and no is not None and nb[a] == nb[b]:
@@ -551,8 +646,16 @@ def extract_mesh1d(map_path: str, part_id: str):
             if pts is None:  # 跨 branch 的連接段 (例如匯流點) 以直線連接
                 pts = [(nx_[a], ny_[a]), (nx_[b], ny_[b])]
             lines.append(pts)
-            br = int(nb[a]) if nb is not None else -1
-            props.append({"branch": _chars(branch_ids, br) if branch_ids is not None and br >= 0 else ""})
+            br = int(ebr[e])
+            name = _chars(branch_ids, br) if branch_ids is not None and 0 <= br < len(branch_ids) else ""
+            prop = {"branch": name}
+            sec = (pipes or {}).get(name)
+            if sec is not None:
+                ch, inv, hh = sec
+                invert[k] = np.interp(float(eoff[e]), ch, inv)
+                height[k] = np.interp(float(eoff[e]), ch, hh)
+                prop.update(pipe=True, height=round(float(height[k]), 3), invert=round(float(invert[k]), 3))
+            props.append(prop)
 
         values = {}
         for name, (var, loc, how) in MESH1D_VARS.items():
@@ -564,18 +667,32 @@ def extract_mesh1d(map_path: str, part_id: str):
             else:
                 va, vb = arr[:, edges[idx, 0]], arr[:, edges[idx, 1]]
                 values[name] = np.fmax(va, vb) if how == "max" else (va + vb) / 2
+        if pipes and "s1" in values:
+            with np.errstate(invalid="ignore"):
+                # 上限 100%：滿管後多出的水由人孔溢出到 2D 網格，管內最多就是滿管
+                values["fill"] = np.clip((values["s1"] - invert) / height * 100, 0, 100).astype("f4")
         return lines, props, values, ds["time"].values
 
 
-def convert_mesh1d(partitions: Dict[str, Dict[str, str]], out_dir: Path, crs: str) -> Optional[str]:
-    """合併各分區 1D 連線，輸出 mesh1d.zarr 與 mesh1d_network.geojson；沒有 1D 時回傳 None。"""
+def convert_mesh1d(partitions: Dict[str, Dict[str, str]], out_dir: Path, crs: str,
+                   crs_files: Optional[Tuple[List[str], List[str]]] = None) -> Optional[str]:
+    """
+    合併各分區 1D 連線，輸出 mesh1d.zarr 與 mesh1d_network.geojson；沒有 1D 時回傳 None。
+    crs_files = (crsdef.ini 清單, crsloc.ini 清單)，用來辨識管線並計算滿管度。
+    """
     from pyproj import Transformer
+
+    pipes = read_pipe_sections(*crs_files) if crs_files and all(crs_files) else {}
+    if pipes:
+        print(f"   管線斷面: {len(pipes)} 條管線 (來源 {', '.join(Path(f).name for f in crs_files[0] + crs_files[1])})")
+    else:
+        print("   (找不到模型的 crsdef.ini / crsloc.ini 或其中沒有封閉斷面，不計算管線滿管度)")
 
     lines, props, values, times = [], [], {}, None
     for part_id, files in partitions.items():
         if "map" not in files:
             continue
-        got = extract_mesh1d(files["map"], part_id)
+        got = extract_mesh1d(files["map"], part_id, pipes)
         if got is None:
             continue
         l, p, v, t = got
@@ -616,11 +733,14 @@ def convert_mesh1d(partitions: Dict[str, Dict[str, str]], out_dir: Path, crs: st
         a = np.abs(arr) if k == "q1" else arr
         fin = a[np.isfinite(a)]
         attrs[f"range_{k}"] = [float(np.percentile(fin, 2)), float(np.percentile(fin, 98))] if fin.size else [0.0, 1.0]
+    if "fill" in merged:  # 滿管度固定 0～100%
+        attrs["range_fill"] = [0.0, 100.0]
     ds_out = xr.Dataset({k: (("time", "edge"), v) for k, v in merged.items()},
                         coords={"time": times, "edge": np.arange(len(lines))}, attrs=attrs)
     zpath = out_dir / "mesh1d.zarr"
     ds_out.to_zarr(str(zpath), mode="w", consolidated=True)
-    print(f"   ✅ 1D 完成: {len(lines)} 段 | 變數: {', '.join(merged)} → mesh1d.zarr、mesh1d_network.geojson")
+    n_pipe = sum(1 for p in props if p.get("pipe"))
+    print(f"   ✅ 1D 完成: {len(lines)} 段 (管線 {n_pipe} 段) | 變數: {', '.join(merged)} → mesh1d.zarr、mesh1d_network.geojson")
     return str(zpath)
 
 
@@ -728,28 +848,8 @@ def _ini_blocks(path: Path) -> List[Dict[str, str]]:
 
 
 def find_structure_files(partitions: Dict[str, Dict[str, str]], input_dir: str) -> List[str]:
-    """
-    找模型的結構物定義檔：在成果資料夾、上一層、上兩層找 .mdu，讀其中的 StructureFile；
-    找不到 .mdu 時，也接受直接放在成果資料夾的 structures.ini。
-    """
-    folders = {Path(f).parent for fs in partitions.values() for f in fs.values()} or {Path(input_dir).resolve()}
-    found: List[str] = []
-    for folder in sorted(folders):
-        for d in (folder, folder.parent, folder.parent.parent):
-            for mdu in sorted(d.glob("*.mdu")):
-                for raw in mdu.read_text(encoding="utf-8", errors="ignore").splitlines():
-                    m = re.match(r"\s*StructureFile\s*=\s*([^#]*)", raw, re.IGNORECASE)
-                    if m:
-                        for name in re.split(r"[;\s]+", m.group(1).strip()):
-                            p = (mdu.parent / name).resolve()
-                            if name and p.is_file() and str(p) not in found:
-                                found.append(str(p))
-            if found:
-                return found
-        direct = folder / "structures.ini"
-        if direct.is_file():
-            return [str(direct)]
-    return found
+    """找模型的結構物定義檔 (.mdu 的 StructureFile，或成果資料夾中的 structures.ini)。"""
+    return find_model_files(partitions, input_dir, "StructureFile", "structures.ini")
 
 
 def read_structure_locations(files: List[str]) -> Dict[str, dict]:
@@ -993,10 +1093,11 @@ def process_dfm_directory_pipeline(input_dir: str, output_dir: Optional[str] = N
         summary["merged"] = {"cog": str(merged_out)}
 
     mesh1d_out = None
+    crs_files = find_crs_files(partitions, input_dir)
     if not skip_zarr:
         print("\n▶ 產製 1D 渠道／管線")
         report("轉檔中：1D 渠道／管線", (len(partitions) + 0.5) / n_steps)
-        mesh1d_out = convert_mesh1d(partitions, target_out_dir, crs)
+        mesh1d_out = convert_mesh1d(partitions, target_out_dir, crs, crs_files)
         if mesh1d_out is None:
             print("   (此成果沒有 1D 網路)")
 
@@ -1013,7 +1114,8 @@ def process_dfm_directory_pipeline(input_dir: str, output_dir: Optional[str] = N
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump({"format_version": OUTPUT_FORMAT_VERSION, "crs": crs, "resolution": grid.res,
                    "source_dir": str(Path(input_dir).resolve()),
-                   "source_signature": source_signature(partitions, ([his_file] if his_file else []) + struct_files),
+                   "source_signature": source_signature(partitions, ([his_file] if his_file else []) + struct_files
+                                                        + crs_files[0] + crs_files[1]),
                    "partitions": summary, "mesh1d": mesh1d_out, "his": his_out},
                   f, indent=2, ensure_ascii=False)
     report("轉檔完成", 1.0)

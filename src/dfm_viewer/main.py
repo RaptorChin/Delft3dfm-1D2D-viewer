@@ -58,10 +58,26 @@ def wait_until_ready(port: int, timeout: float = 300.0) -> bool:
     return False
 
 
+def notify_launcher(status: str):
+    """
+    通知 start_viewer.bat 啟動結果 (ok＝瀏覽器已開啟；error ...＝啟動失敗)。
+    批次檔在環境變數 DFM_READY_FILE 指定通知檔，收到後才關閉命令視窗，
+    避免啟動要等 1～2 分鐘時畫面上什麼都沒有，讓人以為沒反應。
+    """
+    path = os.environ.pop("DFM_READY_FILE", "")
+    if not path:
+        return
+    try:
+        Path(path).write_text(status, encoding="utf-8")
+    except OSError:
+        pass
+
+
 def announce_when_ready(url: str, port: int, lan_url: str, open_browser: bool, opener=webbrowser.open,
                         windowless: bool = False):
     if not wait_until_ready(port):
         print("⚠️ 伺服器啟動逾時，請關閉此視窗後重新執行。", flush=True)
+        notify_launcher("error timeout")
         return
     print("=" * 60)
     print("🚀 Delft3D-FM 多分區水理成果展示圖台已啟動！")
@@ -74,10 +90,16 @@ def announce_when_ready(url: str, port: int, lan_url: str, open_browser: bool, o
         print("   結束程式請在此視窗按 Ctrl + C（使用期間請勿關閉此視窗）")
     print("=" * 60, flush=True)
     if open_browser:
-        try:
-            opener(url)
-        except Exception:
-            pass
+        def _open():
+            try:
+                opener(url)
+            except Exception:
+                pass
+        # 少數環境開瀏覽器的呼叫會卡住不回來；最多等 10 秒就照樣通知批次檔，命令視窗才不會一直關不掉
+        t = threading.Thread(target=_open, daemon=True)
+        t.start()
+        t.join(timeout=10)
+    notify_launcher("ok")
 
 
 LOG_FILE = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "dfm_viewer" / "viewer.log"
@@ -148,10 +170,12 @@ def main():
     try:
         run(windowless)
     except SystemExit:
+        notify_launcher("error exit")
         raise
     except Exception as e:
         import traceback
         traceback.print_exc()
+        notify_launcher("error")
         if windowless:
             show_error_box(f"圖台啟動失敗：{e}\n\n詳細訊息請見記錄檔：\n{LOG_FILE}")
         else:
@@ -186,6 +210,7 @@ def run(windowless: bool):
         if running:
             if not args.no_browser:
                 webbrowser.open(running)
+            notify_launcher("ok")
             return
 
     # 載入 GDAL 等套件需要幾秒；第一次執行時防毒軟體會掃描新安裝的檔案，可能需要 1～2 分鐘。
